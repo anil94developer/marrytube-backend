@@ -5,20 +5,20 @@ const mysql = require('mysql2/promise');
 async function testConnection() {
   console.log('Testing MySQL connection...\n');
   console.log('Configuration:');
-  console.log('  Host:', process.env.DB_HOST || '162.241.27.225');
+  console.log('  Host:', process.env.DB_HOST || '145.79.209.227');
   console.log('  Port:', process.env.DB_PORT || 3306);
-  console.log('  Database:', process.env.DB_NAME || 'a1770cc9_marrytube');
-  console.log('  User:', process.env.DB_USER || 'a1770cc9_marrytube');
+  console.log('  Database:', process.env.DB_NAME || 'u214419219_matkafun');
+  console.log('  User:', process.env.DB_USER || 'u214419219_matkafun');
   console.log('  Password:', process.env.DB_PASSWORD ? '***' : 'Not set');
   console.log('');
 
   try {
     const connection = await mysql.createConnection({
-      host: process.env.DB_HOST || '162.241.27.225',
+      host: process.env.DB_HOST || '145.79.209.227',
       port: process.env.DB_PORT || 3306,
-      user: process.env.DB_USER || 'a1770cc9_marrytube',
-      password: process.env.DB_PASSWORD || 'Shree@123!',
-      database: process.env.DB_NAME || 'a1770cc9_marrytube',
+      user: process.env.DB_USER || 'u214419219_matkafun',
+      password: process.env.DB_PASSWORD || 'Marrytube@123!',
+      database: process.env.DB_NAME || 'u214419219_matkafun',
     });
 
     console.log('✅ Connection successful!');

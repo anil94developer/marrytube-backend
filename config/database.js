@@ -5,11 +5,11 @@ dotenv.config();
 
 // MySQL connection configuration
 const sequelize = new Sequelize(
-  process.env.DB_NAME || 'a1770cc9_marrytube',
-  process.env.DB_USER || 'a1770cc9_marrytube',
-  process.env.DB_PASSWORD || 'Marry@123!',
+  process.env.DB_NAME || 'u214419219_matkafun',
+  process.env.DB_USER || 'u214419219_matkafun',
+  process.env.DB_PASSWORD || 'Marrytube@123!',
   {
-    host: process.env.DB_HOST || '162.241.27.225',
+    host: process.env.DB_HOST || '145.79.209.227',
     port: process.env.DB_PORT || 3306,
     dialect: 'mysql',
     logging: process.env.NODE_ENV === 'development' ? console.log : false,
@@ -54,7 +54,7 @@ const connectDB = async () => {
         console.error('3. User does not have privileges on the database');
         console.error('\nSolution:');
         console.error('1. Go to cPanel → MySQL Databases');
-        console.error('2. Find user: a1770cc9_marrytube');
+        console.error('2. Find user: u214419219_matkafun');
         console.error('3. Change host from "localhost" to "%" (allows all IPs)');
         console.error('4. Or create user with host: ' + connectingIP);
         console.error('\nSee CPANEL_MYSQL_FIX.md for detailed steps');

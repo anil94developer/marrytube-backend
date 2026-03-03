@@ -1,7 +1,7 @@
 # cPanel MySQL User Host Fix - Step by Step
 
 ## Problem
-MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're connecting from remote IP `157.48.90.169`.
+MySQL user `u214419219_matkafun` is restricted to `localhost` only, but you're connecting from remote IP `157.48.90.169`.
 
 ## Solution: Change MySQL User Host in cPanel
 
@@ -18,7 +18,7 @@ MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're co
 
 3. **Find Current Users Section**
    - Scroll down to **"Current Users"**
-   - Look for: `a1770cc9_marrytube@localhost`
+   - Look for: `u214419219_matkafun@localhost`
 
 4. **Update User Host**
    - Click on the user or find **"Actions"** dropdown
@@ -29,7 +29,7 @@ MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're co
 
 5. **Verify Database Privileges**
    - Scroll to **"Add User To Database"** section
-   - Make sure user `a1770cc9_marrytube` has access to database `a1770cc9_marrytube`
+   - Make sure user `u214419219_matkafun` has access to database `u214419219_matkafun`
    - If not, add the user to the database
 
 ### Method 2: Using phpMyAdmin (If Available)
@@ -40,7 +40,7 @@ MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're co
 
 2. **Go to User Accounts**
    - Click on **"User accounts"** tab
-   - Find user: `a1770cc9_marrytube`
+   - Find user: `u214419219_matkafun`
 
 3. **Edit User**
    - Click **"Edit privileges"** for the user
@@ -49,7 +49,7 @@ MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're co
    - Click **"Go"**
 
 4. **Grant Database Privileges**
-   - Make sure user has privileges on database `a1770cc9_marrytube`
+   - Make sure user has privileges on database `u214419219_matkafun`
    - Select database → **"Privileges"** → Check **"ALL PRIVILEGES"**
 
 ### Method 3: Create New User (If Can't Modify)
@@ -57,37 +57,37 @@ MySQL user `a1770cc9_marrytube` is restricted to `localhost` only, but you're co
 1. **In cPanel → MySQL Databases**
 
 2. **Create New User**
-   - Username: `a1770cc9_marrytube_remote` (or same name)
-   - Password: `Shree@123!`
+   - Username: `u214419219_matkafun_remote` (or same name)
+   - Password: `Marrytube@123!`
    - Host: `%` (or your IP `157.48.90.169`)
 
 3. **Add User to Database**
-   - Select user: `a1770cc9_marrytube_remote`
-   - Select database: `a1770cc9_marrytube`
+   - Select user: `u214419219_matkafun_remote`
+   - Select database: `u214419219_matkafun`
    - Click **"Add"**
    - Grant **ALL PRIVILEGES**
 
 4. **Update .env file**
    ```env
-   DB_USER=a1770cc9_marrytube_remote
+   DB_USER=u214419219_matkafun_remote
    ```
 
 ## SQL Commands (If you have direct MySQL access)
 
 ```sql
 -- Check current users
-SELECT user, host FROM mysql.user WHERE user = 'a1770cc9_marrytube';
+SELECT user, host FROM mysql.user WHERE user = 'u214419219_matkafun';
 
 -- Option 1: Rename user host
-RENAME USER 'a1770cc9_marrytube'@'localhost' TO 'a1770cc9_marrytube'@'%';
+RENAME USER 'u214419219_matkafun'@'localhost' TO 'u214419219_matkafun'@'%';
 
 -- Option 2: Create new user with % host
-CREATE USER 'a1770cc9_marrytube'@'%' IDENTIFIED BY 'Shree@123!';
-GRANT ALL PRIVILEGES ON a1770cc9_marrytube.* TO 'a1770cc9_marrytube'@'%';
+CREATE USER 'u214419219_matkafun'@'%' IDENTIFIED BY 'Marrytube@123!';
+GRANT ALL PRIVILEGES ON u214419219_matkafun.* TO 'u214419219_matkafun'@'%';
 FLUSH PRIVILEGES;
 
 -- Verify
-SELECT user, host FROM mysql.user WHERE user = 'a1770cc9_marrytube';
+SELECT user, host FROM mysql.user WHERE user = 'u214419219_matkafun';
 ```
 
 ## After Making Changes
@@ -120,7 +120,7 @@ Server is running on port 5001
 2. Verify database name exists
 3. Make sure user has privileges on the database
 4. Try connecting with specific IP instead of `%`:
-   - Create user: `a1770cc9_marrytube@157.48.90.169`
+   - Create user: `u214419219_matkafun@157.48.90.169`
 
 ### Common Issues:
 - **User exists but wrong host**: Must change host from `localhost` to `%`

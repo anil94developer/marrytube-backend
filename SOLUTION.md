@@ -25,16 +25,16 @@ npm install
 
 ## Issue 2: MySQL Access Denied Error
 
-**Error:** `Access denied for user 'a1770cc9_marrytube'@'157.48.90.169'`
+**Error:** `Access denied for user 'u214419219_matkafun'@'157.48.90.169'`
 
 ### Problem:
 The MySQL user is restricted to a specific host (usually `localhost`). Even if access hosts are whitelisted, the user itself needs to allow connections from your IP.
 
 ### Root Cause:
 MySQL users have a host restriction. Common patterns:
-- ❌ `a1770cc9_marrytube@localhost` - Only allows localhost connections
-- ✅ `a1770cc9_marrytube@%` - Allows all hosts
-- ✅ `a1770cc9_marrytube@157.48.90.169` - Allows specific IP
+- ❌ `u214419219_matkafun@localhost` - Only allows localhost connections
+- ✅ `u214419219_matkafun@%` - Allows all hosts
+- ✅ `u214419219_matkafun@157.48.90.169` - Allows specific IP
 
 ### Solution: Update MySQL User Host in cPanel
 
@@ -50,7 +50,7 @@ MySQL users have a host restriction. Common patterns:
 
 3. **Find Your MySQL User**
    - Scroll down to **"Current Users"** section
-   - Look for user: `a1770cc9_marrytube`
+   - Look for user: `u214419219_matkafun`
    - Check the host column (it might show `localhost`)
 
 4. **Update User Host**
@@ -61,13 +61,13 @@ MySQL users have a host restriction. Common patterns:
 
 5. **Alternative: Create New User with Correct Host**
    - If you can't modify, create a new user:
-     - Username: `a1770cc9_marrytube` (or same)
+     - Username: `u214419219_matkafun` (or same)
      - Host: `%` (or your IP `157.48.90.169`)
-     - Password: `Shree@123!`
-   - Grant privileges to database `a1770cc9_marrytube`
+     - Password: `Marrytube@123!`
+   - Grant privileges to database `u214419219_matkafun`
 
 6. **Grant Database Privileges**
-   - Make sure the user has **ALL PRIVILEGES** on database `a1770cc9_marrytube`
+   - Make sure the user has **ALL PRIVILEGES** on database `u214419219_matkafun`
    - In cPanel, you can do this in **"Add User To Database"** section
 
 7. **Save Changes**
@@ -78,11 +78,11 @@ MySQL users have a host restriction. Common patterns:
 
 ```sql
 -- Option 1: Update existing user host
-RENAME USER 'a1770cc9_marrytube'@'localhost' TO 'a1770cc9_marrytube'@'%';
+RENAME USER 'u214419219_matkafun'@'localhost' TO 'u214419219_matkafun'@'%';
 
 -- Option 2: Create new user with % host
-CREATE USER 'a1770cc9_marrytube'@'%' IDENTIFIED BY 'Shree@123!';
-GRANT ALL PRIVILEGES ON a1770cc9_marrytube.* TO 'a1770cc9_marrytube'@'%';
+CREATE USER 'u214419219_matkafun'@'%' IDENTIFIED BY 'Marrytube@123!';
+GRANT ALL PRIVILEGES ON u214419219_matkafun.* TO 'u214419219_matkafun'@'%';
 FLUSH PRIVILEGES;
 ```
 
@@ -116,10 +116,10 @@ You should see: `✅ MySQL connected successfully`
    cat > .env << 'EOF'
    PORT=5001
    NODE_ENV=development
-   DB_NAME=a1770cc9_marrytube
-   DB_USER=a1770cc9_marrytube
-   DB_PASSWORD=Shree@123!
-   DB_HOST=162.241.27.225
+   DB_NAME=u214419219_matkafun
+   DB_USER=u214419219_matkafun
+   DB_PASSWORD=Marrytube@123!
+   DB_HOST=145.79.209.227
    DB_PORT=3306
    JWT_SECRET=marrytube-secret-key-change-in-production-2024
    EOF

@@ -14,10 +14,10 @@ PORT=5001
 NODE_ENV=development
 
 # MySQL Database Configuration
-DB_NAME=a1770cc9_marrytube
-DB_USER=a1770cc9_marrytube
-DB_PASSWORD=Shree@123!
-DB_HOST=162.241.27.225
+DB_NAME=u214419219_matkafun
+DB_USER=u214419219_matkafun
+DB_PASSWORD=Marrytube@123!
+DB_HOST=145.79.209.227
 DB_PORT=3306
 
 # JWT Secret
@@ -47,10 +47,10 @@ OTP_LENGTH=6
 
 ### Database Details
 
-- **Database Name:** a1770cc9_marrytube
-- **Username:** a1770cc9_marrytube
-- **Password:** Shree@123!
-- **Host:** 162.241.27.225
+- **Database Name:** u214419219_matkafun
+- **Username:** u214419219_matkafun
+- **Password:** Marrytube@123!
+- **Host:** 145.79.209.227
 - **Port:** 3306 (default MySQL port)
 
 ### Important Notes
