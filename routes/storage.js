@@ -16,9 +16,9 @@ router.get('/dashboard', authMiddleware, async (req, res) => {
     if (!storage) {
       storage = await Storage.create({
         userId,
-        totalStorage: 1,
+        totalStorage: 0,
         usedStorage: 0,
-        availableStorage: 1,
+        availableStorage: 0,
       });
     }
     const videoCount = await Media.count({ where: { userId, category: 'video' } });
@@ -60,12 +60,12 @@ router.get('/user', authMiddleware, async (req, res) => {
     let storage = await Storage.findOne({ where: { userId } });
 
     if (!storage) {
-      // Create default storage
+      // Create default storage (0 GB — no free storage for new users)
       storage = await Storage.create({
         userId,
-        totalStorage: 1,
+        totalStorage: 0,
         usedStorage: 0,
-        availableStorage: 1,
+        availableStorage: 0,
       });
     }
 
@@ -107,14 +107,14 @@ router.get('/my-plans', authMiddleware, async (req, res) => {
       return res.json(plansWithUsed);
     }
 
-    // No UserStoragePlan: return one "default" drive from Storage so UI can show one card
+    // No UserStoragePlan: return one "default" drive from Storage (0 GB for new users — no free storage)
     let storage = await Storage.findOne({ where: { userId } });
     if (!storage) {
       storage = await Storage.create({
         userId,
-        totalStorage: 1,
+        totalStorage: 0,
         usedStorage: 0,
-        availableStorage: 1,
+        availableStorage: 0,
       });
     }
     const totalGB = parseFloat(storage.totalStorage) || 0;
@@ -214,9 +214,9 @@ router.post('/purchase', authMiddleware, [
     if (!userStorage) {
       userStorage = await Storage.create({
         userId,
-        totalStorage: 1,
+        totalStorage: 0,
         usedStorage: 0,
-        availableStorage: 1,
+        availableStorage: 0,
       });
     }
     const newTotalStorage = parseFloat(userStorage.totalStorage) + storageNum;

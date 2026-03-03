@@ -230,7 +230,7 @@ router.post('/upload', uploadMulter.single('media'), async (req, res) => {
     } else {
       let storage = await Storage.findOne({ where: { userId } });
       if (!storage) {
-        storage = await Storage.create({ userId, totalStorage: 1, usedStorage: 0, availableStorage: 1 });
+        storage = await Storage.create({ userId, totalStorage: 0, usedStorage: 0, availableStorage: 0 });
       }
       const newUsedStorage = parseFloat(storage.usedStorage) + sizeInGB;
       await storage.update({
@@ -304,7 +304,7 @@ router.post('/save', [
     } else {
       let storage = await Storage.findOne({ where: { userId } });
       if (!storage) {
-        storage = await Storage.create({ userId, totalStorage: 1, usedStorage: 0, availableStorage: 1 });
+        storage = await Storage.create({ userId, totalStorage: 0, usedStorage: 0, availableStorage: 0 });
       }
       const newUsedStorage = parseFloat(storage.usedStorage) + sizeInGB;
       await storage.update({
