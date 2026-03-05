@@ -108,29 +108,29 @@ router.get('/my-plans', authMiddleware, async (req, res) => {
     }
 
     // No UserStoragePlan: return one "default" drive from Storage (0 GB for new users — no free storage)
-    let storage = await Storage.findOne({ where: { userId } });
-    if (!storage) {
-      storage = await Storage.create({
-        userId,
-        totalStorage: 0,
-        usedStorage: 0,
-        availableStorage: 0,
-      });
-    }
-    const totalGB = parseFloat(storage.totalStorage) || 0;
-    const usedGB = parseFloat(storage.usedStorage) || 0;
-    const defaultDrive = {
-      id: 'default',
-      userId,
-      totalStorage: totalGB,
-      usedStorage: Math.round(usedGB * BYTES_PER_GB),
-      availableStorage: Math.max(0, totalGB - usedGB),
-      expiryDate: null,
-      createdAt: storage.createdAt,
-      status: 'active',
-      isDefault: true,
-    };
-    res.json([defaultDrive]);
+    // let storage = await Storage.findOne({ where: { userId } });
+    // if (!storage) {
+    //   storage = await Storage.create({
+    //     userId,
+    //     totalStorage: 0,
+    //     usedStorage: 0,
+    //     availableStorage: 0,
+    //   });
+    // }
+    // const totalGB = parseFloat(storage.totalStorage) || 0;
+    // const usedGB = parseFloat(storage.usedStorage) || 0;
+    // const defaultDrive = {
+    //   id: 'default',
+    //   userId,
+    //   totalStorage: totalGB,
+    //   usedStorage: Math.round(usedGB * BYTES_PER_GB),
+    //   availableStorage: Math.max(0, totalGB - usedGB),
+    //   expiryDate: null,
+    //   createdAt: storage.createdAt,
+    //   status: 'active',
+    //   isDefault: true,
+    // };
+    // res.json([defaultDrive]);
   } catch (error) {
     console.error('Get my plans error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
