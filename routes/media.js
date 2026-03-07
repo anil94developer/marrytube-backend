@@ -583,12 +583,16 @@ router.patch('/folders/:folderId', [
       if (raw !== null && raw !== '' && raw !== 'null') {
         const pid = parseInt(raw, 10);
         if (!Number.isNaN(pid)) {
-          if (pid === folder.id) return res.status(400).json({ success: false, message: 'Folder cannot be its own parent' });
+          const folderIdNum = Number(folder.id);
+          if (pid === folderIdNum) return res.status(400).json({ success: false, message: 'Folder cannot be its own parent' });
           const parent = await Folder.findOne({ where: { id: pid, userId } });
           if (!parent) return res.status(400).json({ success: false, message: 'Parent folder not found' });
+          // Reject if new parent is the folder we're moving or any of its descendants (would create a cycle)
           let check = parent;
-          while (check && check.parentFolderId) {
-            if (check.parentFolderId === folder.id) return res.status(400).json({ success: false, message: 'Cannot move folder inside its own descendant' });
+          while (check) {
+            if (Number(check.id) === folderIdNum) return res.status(400).json({ success: false, message: 'Cannot move folder inside its own descendant' });
+            if (check.parentFolderId == null) break;
+            if (Number(check.parentFolderId) === folderIdNum) return res.status(400).json({ success: false, message: 'Cannot move folder inside its own descendant' });
             check = await Folder.findOne({ where: { id: check.parentFolderId, userId } });
           }
           newParentId = parent.id;
