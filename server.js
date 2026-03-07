@@ -59,12 +59,14 @@ const mediaRoutes = require('./routes/media');
 const storageRoutes = require('./routes/storage');
 const adminRoutes = require('./routes/admin');
 const studioRoutes = require('./routes/studio');
+const shareRoutes = require('./routes/share');
 
 app.use('/api/auth', authRoutes);
 app.use('/api/media', mediaRoutes);
 app.use('/api/storage', storageRoutes);
 app.use('/api/admin', adminRoutes);
 app.use('/api/studio', studioRoutes);
+app.use('/api/share', shareRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {

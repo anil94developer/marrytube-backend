@@ -25,15 +25,28 @@ const Folder = sequelize.define('Folder', {
     allowNull: true,
     comment: 'References UserStoragePlan.id',
   },
+  parentFolderId: {
+    type: DataTypes.INTEGER,
+    allowNull: true,
+    references: {
+      model: 'folders',
+      key: 'id',
+    },
+    comment: 'Parent folder for nested structure',
+  },
 }, {
   tableName: 'folders',
   timestamps: true,
   indexes: [
     { fields: ['userId'] },
+    { fields: ['parentFolderId'] },
+    { fields: ['userId', 'userPlanId', 'parentFolderId'] },
   ],
 });
 
 // Define associations
 Folder.belongsTo(User, { foreignKey: 'userId', as: 'user' });
+Folder.belongsTo(Folder, { foreignKey: 'parentFolderId', as: 'parentFolder' });
+Folder.hasMany(Folder, { foreignKey: 'parentFolderId', as: 'subfolders' });
 
 module.exports = Folder;

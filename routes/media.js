@@ -109,6 +109,104 @@ router.get('/:mediaId', async (req, res) => {
   }
 });
 
+// Update media (rename and/or move to folder)
+router.patch('/:mediaId', [
+  body('name').optional().trim().notEmpty().withMessage('Media name cannot be empty'),
+  body('folderId').optional(),
+], async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    const userId = req.user.id;
+    const media = await Media.findOne({ where: { id: parseInt(mediaId), userId } });
+    if (!media) return res.status(404).json({ success: false, message: 'Media not found' });
+
+    if (req.body.name !== undefined) {
+      const name = (req.body.name && typeof req.body.name === 'string') ? req.body.name.trim() : '';
+      if (!name) return res.status(400).json({ success: false, message: 'Media name cannot be empty' });
+      media.name = name;
+    }
+    if (req.body.folderId !== undefined) {
+      const raw = req.body.folderId;
+      let newFolderId = null;
+      if (raw !== null && raw !== '' && raw !== 'null') {
+        const fid = parseInt(raw, 10);
+        if (!Number.isNaN(fid)) {
+          const folder = await Folder.findOne({ where: { id: fid, userId } });
+          if (!folder) return res.status(400).json({ success: false, message: 'Folder not found' });
+          if (folder.userPlanId !== media.userPlanId) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
+          newFolderId = folder.id;
+        }
+      }
+      media.folderId = newFolderId;
+    }
+    await media.save();
+    res.json(media);
+  } catch (error) {
+    console.error('Update media error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+});
+
+// Copy media to same or another folder (same drive)
+router.post('/:mediaId/copy', [
+  body('folderId').optional(),
+], async (req, res) => {
+  try {
+    const { mediaId } = req.params;
+    const userId = req.user.id;
+    const media = await Media.findOne({ where: { id: parseInt(mediaId), userId } });
+    if (!media) return res.status(404).json({ success: false, message: 'Media not found' });
+
+    const raw = req.body.folderId;
+    let folderId = null;
+    if (raw !== undefined && raw !== null && raw !== '' && raw !== 'null') {
+      const fid = parseInt(raw, 10);
+      if (!Number.isNaN(fid)) {
+        const folder = await Folder.findOne({ where: { id: fid, userId } });
+        if (!folder) return res.status(400).json({ success: false, message: 'Folder not found' });
+        if (folder.userPlanId !== media.userPlanId) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
+        folderId = folder.id;
+      }
+    }
+
+    const copy = await Media.create({
+      userId,
+      name: media.name,
+      url: media.url,
+      s3Key: media.s3Key,
+      category: media.category,
+      size: media.size,
+      mimeType: media.mimeType,
+      folderId,
+      userPlanId: media.userPlanId,
+      uploadedBy: media.uploadedBy,
+    });
+
+    if (media.userPlanId) {
+      const plan = await UserStoragePlan.findByPk(media.userPlanId);
+      if (plan) {
+        plan.usedStorage = (Number(plan.usedStorage) || 0) + media.size;
+        await plan.save();
+      }
+    } else {
+      const sizeInGB = media.size / (1024 * 1024 * 1024);
+      let storage = await Storage.findOne({ where: { userId } });
+      if (storage) {
+        const newUsed = parseFloat(storage.usedStorage) + sizeInGB;
+        await storage.update({
+          usedStorage: newUsed,
+          availableStorage: Math.max(0, parseFloat(storage.totalStorage) - newUsed),
+        });
+      }
+    }
+
+    res.status(201).json(copy);
+  } catch (error) {
+    console.error('Copy media error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+});
+
 // Get presigned URL for upload (optional userPlanId: 'default' or plan id for drive)
 router.post('/upload-url', [
   body('fileName').notEmpty().withMessage('File name is required'),
@@ -377,13 +475,29 @@ router.delete('/:mediaId', async (req, res) => {
 
 // Folder management
 
-// Get folders
+// Get folders (optional parentFolderId = null for root, userPlanId to filter by drive)
 router.get('/folders/list', async (req, res) => {
   try {
     const userId = req.user.id;
+    const { parentFolderId, userPlanId } = req.query;
+    const where = { userId };
+    if (parentFolderId !== undefined && parentFolderId !== null) {
+      if (parentFolderId === '' || parentFolderId === 'null') {
+        where.parentFolderId = null;
+      } else {
+        const pid = parseInt(parentFolderId, 10);
+        if (!Number.isNaN(pid)) where.parentFolderId = pid;
+      }
+    }
+    if (userPlanId !== undefined && userPlanId !== null && userPlanId !== '' && userPlanId !== 'default') {
+      const planId = parseInt(userPlanId, 10);
+      if (!Number.isNaN(planId)) where.userPlanId = planId;
+    } else if (userPlanId === 'default' || userPlanId === '') {
+      where.userPlanId = null;
+    }
     const folders = await Folder.findAll({
-      where: { userId },
-      order: [['createdAt', 'DESC']],
+      where,
+      order: [['name', 'ASC'], ['createdAt', 'DESC']],
     });
     res.json(folders);
   } catch (error) {
@@ -392,7 +506,7 @@ router.get('/folders/list', async (req, res) => {
   }
 });
 
-// Create folder (user panel). Same as studio: { name, planId }. planId = UserStoragePlan id (null for default drive).
+// Create folder (name, planId, parentFolderId for nested folders)
 router.post('/folders', [
   body('name').trim().notEmpty().withMessage('Folder name is required'),
 ], async (req, res) => {
@@ -417,11 +531,26 @@ router.post('/folders', [
         userPlanId = plan.id;
       }
     }
+    let parentFolderId = null;
+    const rawParent = req.body.parentFolderId ?? req.body.parentId;
+    if (rawParent !== undefined && rawParent !== null && rawParent !== '' && rawParent !== 'null') {
+      const pid = parseInt(rawParent, 10);
+      if (!Number.isNaN(pid)) {
+        const parent = await Folder.findOne({ where: { id: pid, userId } });
+        if (!parent) return res.status(400).json({ success: false, message: 'Parent folder not found' });
+        parentFolderId = parent.id;
+        if (userPlanId === null && parent.userPlanId !== null) userPlanId = parent.userPlanId;
+        if (userPlanId !== null && parent.userPlanId !== null && parent.userPlanId !== userPlanId) {
+          return res.status(400).json({ success: false, message: 'Parent folder must be on same drive' });
+        }
+      }
+    }
 
     const folder = await Folder.create({
       userId,
       name,
       userPlanId: userPlanId ?? null,
+      parentFolderId,
     });
 
     res.json(folder);
@@ -432,30 +561,270 @@ router.post('/folders', [
   }
 });
 
-// Delete folder
+// Update folder (rename and/or move to another folder)
+router.patch('/folders/:folderId', [
+  body('name').optional().trim().notEmpty().withMessage('Folder name cannot be empty'),
+  body('parentFolderId').optional(),
+], async (req, res) => {
+  try {
+    const { folderId } = req.params;
+    const userId = req.user.id;
+    const folder = await Folder.findOne({ where: { id: parseInt(folderId), userId } });
+    if (!folder) return res.status(404).json({ success: false, message: 'Folder not found' });
+
+    if (req.body.name !== undefined) {
+      const name = (req.body.name && typeof req.body.name === 'string') ? req.body.name.trim() : '';
+      if (!name) return res.status(400).json({ success: false, message: 'Folder name cannot be empty' });
+      folder.name = name;
+    }
+    if (req.body.parentFolderId !== undefined) {
+      const raw = req.body.parentFolderId;
+      let newParentId = null;
+      if (raw !== null && raw !== '' && raw !== 'null') {
+        const pid = parseInt(raw, 10);
+        if (!Number.isNaN(pid)) {
+          if (pid === folder.id) return res.status(400).json({ success: false, message: 'Folder cannot be its own parent' });
+          const parent = await Folder.findOne({ where: { id: pid, userId } });
+          if (!parent) return res.status(400).json({ success: false, message: 'Parent folder not found' });
+          let check = parent;
+          while (check && check.parentFolderId) {
+            if (check.parentFolderId === folder.id) return res.status(400).json({ success: false, message: 'Cannot move folder inside its own descendant' });
+            check = await Folder.findOne({ where: { id: check.parentFolderId, userId } });
+          }
+          newParentId = parent.id;
+        }
+      }
+      folder.parentFolderId = newParentId;
+    }
+    await folder.save();
+    res.json(folder);
+  } catch (error) {
+    console.error('Update folder error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+});
+
+// Delete folder (reparent subfolders and media to this folder's parent, then delete)
 router.delete('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
     const userId = req.user.id;
-
-    const folder = await Folder.findOne({ where: { id: parseInt(folderId), userId } });
+    const folderIdNum = parseInt(folderId, 10);
+    const folder = await Folder.findOne({ where: { id: folderIdNum, userId } });
     if (!folder) {
       return res.status(404).json({ success: false, message: 'Folder not found' });
     }
+    const newParentId = folder.parentFolderId;
 
-    // Remove folderId from media items
+    await Folder.update(
+      { parentFolderId: newParentId },
+      { where: { parentFolderId: folderIdNum, userId } }
+    );
     await Media.update(
-      { folderId: null },
-      { where: { folderId: parseInt(folderId), userId } }
+      { folderId: newParentId },
+      { where: { folderId: folderIdNum, userId } }
     );
 
-    // Delete folder
     await folder.destroy();
-
     res.json({ success: true });
   } catch (error) {
     console.error('Delete folder error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Helper: collect all descendant folder ids (recursive)
+async function getDescendantFolderIds(userId, folderId, result = new Set()) {
+  const children = await Folder.findAll({ where: { userId, parentFolderId: folderId }, attributes: ['id'] });
+  for (const c of children) {
+    result.add(c.id);
+    await getDescendantFolderIds(userId, c.id, result);
+  }
+  return result;
+}
+
+// Move folder (and all its media) to another drive. Optional toFolderId = parent folder on destination drive.
+router.post('/folders/:folderId/move-to-drive', [
+  body('toUserPlanId').notEmpty().withMessage('Destination drive is required'),
+  body('toFolderId').optional(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+    const { folderId } = req.params;
+    const userId = req.user.id;
+    const toRaw = req.body.toUserPlanId;
+    const toId = toRaw === 'default' || toRaw === '' ? 'default' : parseInt(toRaw, 10);
+    const newPlanId = toId === 'default' ? null : toId;
+    let toFolderId = req.body.toFolderId != null && req.body.toFolderId !== '' ? parseInt(req.body.toFolderId, 10) : null;
+    if (toFolderId !== null && Number.isNaN(toFolderId)) toFolderId = null;
+    if (newPlanId !== null) {
+      const toPlan = await UserStoragePlan.findOne({ where: { id: newPlanId, userId } });
+      if (!toPlan) return res.status(404).json({ success: false, message: 'Destination drive not found' });
+    }
+    if (toFolderId != null) {
+      const destFolder = await Folder.findOne({ where: { id: toFolderId, userId, userPlanId: newPlanId } });
+      if (!destFolder) return res.status(400).json({ success: false, message: 'Destination folder not found on that drive' });
+    }
+
+    const folder = await Folder.findOne({ where: { id: parseInt(folderId, 10), userId } });
+    if (!folder) return res.status(404).json({ success: false, message: 'Folder not found' });
+
+    const allIds = new Set([folder.id]);
+    await getDescendantFolderIds(userId, folder.id, allIds);
+    const folderIds = Array.from(allIds);
+
+    const targetFolder = await Folder.create({
+      userId,
+      name: folder.name,
+      userPlanId: newPlanId,
+      parentFolderId: toFolderId,
+    });
+
+    const mediaInTree = await Media.findAll({
+      where: { userId, folderId: { [Op.in]: folderIds } },
+    });
+    for (const m of mediaInTree) {
+      await m.update({ userPlanId: newPlanId, folderId: targetFolder.id });
+    }
+
+    const fromPlanId = folder.userPlanId;
+    if (fromPlanId) {
+      const sumFrom = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: fromPlanId },
+        raw: true,
+      });
+      const usedFrom = Math.max(0, Number(sumFrom[0]?.total) || 0);
+      const planFrom = await UserStoragePlan.findByPk(fromPlanId);
+      if (planFrom) await planFrom.update({ usedStorage: usedFrom });
+    } else {
+      const defaultSum = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: null },
+        raw: true,
+      });
+      const usedBytes = Number(defaultSum[0]?.total) || 0;
+      const usedGB = usedBytes / BYTES_PER_GB;
+      let storage = await Storage.findOne({ where: { userId } });
+      if (storage) await storage.update({ usedStorage: usedGB, availableStorage: Math.max(0, parseFloat(storage.totalStorage) - usedGB) });
+    }
+    if (newPlanId) {
+      const sumTo = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: newPlanId },
+        raw: true,
+      });
+      const usedTo = Math.max(0, Number(sumTo[0]?.total) || 0);
+      const planTo = await UserStoragePlan.findByPk(newPlanId);
+      if (planTo) await planTo.update({ usedStorage: usedTo });
+    } else {
+      const defaultSum = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: null },
+        raw: true,
+      });
+      const usedBytes = Number(defaultSum[0]?.total) || 0;
+      const usedGB = usedBytes / BYTES_PER_GB;
+      let storage = await Storage.findOne({ where: { userId } });
+      if (storage) await storage.update({ usedStorage: usedGB, availableStorage: Math.max(0, parseFloat(storage.totalStorage) - usedGB) });
+    }
+
+    const toDelete = folderIds.slice().sort((a, b) => b - a);
+    for (const fid of toDelete) {
+      await Media.update({ folderId: null }, { where: { folderId: fid, userId } });
+      const f = await Folder.findByPk(fid);
+      if (f) await f.destroy();
+    }
+
+    res.json({ success: true, targetFolderId: targetFolder.id, movedMediaCount: mediaInTree.length });
+  } catch (error) {
+    console.error('Move folder to drive error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+});
+
+// Copy folder (and all its media) to another drive. Optional toFolderId = parent folder on destination drive.
+router.post('/folders/:folderId/copy-to-drive', [
+  body('toUserPlanId').notEmpty().withMessage('Destination drive is required'),
+  body('toFolderId').optional(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+    const { folderId } = req.params;
+    const userId = req.user.id;
+    const toRaw = req.body.toUserPlanId;
+    const toId = toRaw === 'default' || toRaw === '' ? 'default' : parseInt(toRaw, 10);
+    const newPlanId = toId === 'default' ? null : toId;
+    let toFolderId = req.body.toFolderId != null && req.body.toFolderId !== '' ? parseInt(req.body.toFolderId, 10) : null;
+    if (toFolderId !== null && Number.isNaN(toFolderId)) toFolderId = null;
+    if (newPlanId !== null) {
+      const toPlan = await UserStoragePlan.findOne({ where: { id: newPlanId, userId } });
+      if (!toPlan) return res.status(404).json({ success: false, message: 'Destination drive not found' });
+    }
+    if (toFolderId != null) {
+      const destFolder = await Folder.findOne({ where: { id: toFolderId, userId, userPlanId: newPlanId } });
+      if (!destFolder) return res.status(400).json({ success: false, message: 'Destination folder not found on that drive' });
+    }
+
+    const folder = await Folder.findOne({ where: { id: parseInt(folderId, 10), userId } });
+    if (!folder) return res.status(404).json({ success: false, message: 'Folder not found' });
+
+    const allIds = new Set([folder.id]);
+    await getDescendantFolderIds(userId, folder.id, allIds);
+    const folderIds = Array.from(allIds);
+
+    const targetFolder = await Folder.create({
+      userId,
+      name: folder.name,
+      userPlanId: newPlanId,
+      parentFolderId: toFolderId,
+    });
+
+    const mediaInTree = await Media.findAll({
+      where: { userId, folderId: { [Op.in]: folderIds } },
+    });
+    for (const m of mediaInTree) {
+      await Media.create({
+        userId,
+        name: m.name,
+        url: m.url,
+        s3Key: m.s3Key,
+        category: m.category,
+        size: m.size,
+        mimeType: m.mimeType,
+        folderId: targetFolder.id,
+        userPlanId: newPlanId,
+        uploadedBy: m.uploadedBy,
+      });
+    }
+
+    if (newPlanId) {
+      const sumTo = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: newPlanId },
+        raw: true,
+      });
+      const usedTo = Math.max(0, Number(sumTo[0]?.total) || 0);
+      const planTo = await UserStoragePlan.findByPk(newPlanId);
+      if (planTo) await planTo.update({ usedStorage: usedTo });
+    } else {
+      const defaultSum = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: null },
+        raw: true,
+      });
+      const usedBytes = Number(defaultSum[0]?.total) || 0;
+      const usedGB = usedBytes / BYTES_PER_GB;
+      let storage = await Storage.findOne({ where: { userId } });
+      if (storage) await storage.update({ usedStorage: usedGB, availableStorage: Math.max(0, parseFloat(storage.totalStorage) - usedGB) });
+    }
+
+    res.json({ success: true, targetFolderId: targetFolder.id, copiedMediaCount: mediaInTree.length });
+  } catch (error) {
+    console.error('Copy folder to drive error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 });
 

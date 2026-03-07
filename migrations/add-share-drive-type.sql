@@ -1,0 +1,2 @@
+-- Add 'drive' to share resourceType enum (run if you get invalid enum value)
+-- ALTER TABLE shares MODIFY COLUMN resourceType ENUM('folder', 'media', 'drive');

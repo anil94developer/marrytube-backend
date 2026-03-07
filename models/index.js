@@ -11,6 +11,7 @@ const OTP = require('./OTP');
 const StudioClient = require('./StudioClient');
 const FundRequest = require('./FundRequest');
 const AppSetting = require('./AppSetting');
+const Share = require('./Share');
 
 // Define associations
 User.hasMany(Media, { foreignKey: 'userId', as: 'media' });
@@ -34,5 +35,6 @@ module.exports = {
   FundRequest,
   UserStoragePlan,
   AppSetting,
+  Share,
 };
 

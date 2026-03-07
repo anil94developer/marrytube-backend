@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { fn, col } = require('sequelize');
-const { Storage, StoragePlan, Media, UserStoragePlan } = require('../models');
+const { Storage, StoragePlan, Media, UserStoragePlan, Folder } = require('../models');
 const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
@@ -236,11 +236,12 @@ router.post('/purchase', authMiddleware, [
   }
 });
 
-// Move media between drives (user's own). fromUserPlanId / toUserPlanId: 'default' or plan id
+// Move media between drives (user's own). Optional toFolderId = folder on destination drive.
 router.post('/move-media', authMiddleware, [
   body('fromUserPlanId').notEmpty().withMessage('Source drive is required'),
   body('toUserPlanId').notEmpty().withMessage('Destination drive is required'),
   body('mediaIds').optional().isArray().withMessage('mediaIds must be an array'),
+  body('toFolderId').optional(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -251,11 +252,23 @@ router.post('/move-media', authMiddleware, [
     const fromRaw = req.body.fromUserPlanId;
     const toRaw = req.body.toUserPlanId;
     const mediaIds = Array.isArray(req.body.mediaIds) ? req.body.mediaIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id)) : null;
+    let toFolderId = req.body.toFolderId != null && req.body.toFolderId !== '' ? parseInt(req.body.toFolderId, 10) : null;
+    if (toFolderId !== null && Number.isNaN(toFolderId)) toFolderId = null;
 
     const fromId = fromRaw === 'default' || fromRaw === '' ? 'default' : parseInt(fromRaw, 10);
     const toId = toRaw === 'default' || toRaw === '' ? 'default' : parseInt(toRaw, 10);
     if (fromId === toId) {
       return res.status(400).json({ success: false, message: 'Source and destination must be different' });
+    }
+
+    const newPlanId = toId === 'default' ? null : toId;
+    if (newPlanId !== null) {
+      const toPlan = await UserStoragePlan.findOne({ where: { id: newPlanId, userId } });
+      if (!toPlan) return res.status(404).json({ success: false, message: 'Destination drive not found' });
+    }
+    if (toFolderId != null) {
+      const destFolder = await Folder.findOne({ where: { id: toFolderId, userId, userPlanId: newPlanId } });
+      if (!destFolder) return res.status(400).json({ success: false, message: 'Destination folder not found on that drive' });
     }
 
     const where = { userId };
@@ -268,13 +281,7 @@ router.post('/move-media', authMiddleware, [
     }
     if (mediaIds && mediaIds.length > 0) where.id = { [Op.in]: mediaIds };
 
-    const newPlanId = toId === 'default' ? null : toId;
-    if (newPlanId !== null) {
-      const toPlan = await UserStoragePlan.findOne({ where: { id: newPlanId, userId } });
-      if (!toPlan) return res.status(404).json({ success: false, message: 'Destination drive not found' });
-    }
-
-    const count = await Media.update({ userPlanId: newPlanId }, { where });
+    const count = await Media.update({ userPlanId: newPlanId, folderId: toFolderId }, { where });
     const movedCount = count[0] || 0;
 
     // Recompute used: for each plan that had or now has media for this user
@@ -313,6 +320,102 @@ router.post('/move-media', authMiddleware, [
     res.json({ success: true, movedCount, fromPlan: fromId, toPlan: toId });
   } catch (error) {
     console.error('Move media error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Copy media to another drive. Optional toFolderId = folder on destination drive.
+router.post('/copy-media', authMiddleware, [
+  body('fromUserPlanId').notEmpty().withMessage('Source drive is required'),
+  body('toUserPlanId').notEmpty().withMessage('Destination drive is required'),
+  body('mediaIds').optional().isArray().withMessage('mediaIds must be an array'),
+  body('toFolderId').optional(),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    const userId = req.user.id;
+    const fromRaw = req.body.fromUserPlanId;
+    const toRaw = req.body.toUserPlanId;
+    const mediaIds = Array.isArray(req.body.mediaIds) ? req.body.mediaIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id)) : null;
+    let toFolderId = req.body.toFolderId != null && req.body.toFolderId !== '' ? parseInt(req.body.toFolderId, 10) : null;
+    if (toFolderId !== null && Number.isNaN(toFolderId)) toFolderId = null;
+
+    const fromId = fromRaw === 'default' || fromRaw === '' ? 'default' : parseInt(fromRaw, 10);
+    const toId = toRaw === 'default' || toRaw === '' ? 'default' : parseInt(toRaw, 10);
+    if (fromId === toId) {
+      return res.status(400).json({ success: false, message: 'Source and destination must be different' });
+    }
+
+    const newPlanId = toId === 'default' ? null : toId;
+    if (newPlanId !== null) {
+      const toPlan = await UserStoragePlan.findOne({ where: { id: newPlanId, userId } });
+      if (!toPlan) return res.status(404).json({ success: false, message: 'Destination drive not found' });
+    }
+    if (toFolderId != null) {
+      const destFolder = await Folder.findOne({ where: { id: toFolderId, userId, userPlanId: newPlanId } });
+      if (!destFolder) return res.status(400).json({ success: false, message: 'Destination folder not found on that drive' });
+    }
+
+    const where = { userId };
+    if (fromId === 'default') {
+      where.userPlanId = null;
+    } else {
+      const fromPlan = await UserStoragePlan.findOne({ where: { id: fromId, userId } });
+      if (!fromPlan) return res.status(404).json({ success: false, message: 'Source drive not found' });
+      where.userPlanId = fromPlan.id;
+    }
+    if (mediaIds && mediaIds.length > 0) where.id = { [Op.in]: mediaIds };
+
+    const items = await Media.findAll({ where });
+    let copied = 0;
+    for (const m of items) {
+      await Media.create({
+        userId,
+        name: m.name,
+        url: m.url,
+        s3Key: m.s3Key,
+        category: m.category,
+        size: m.size,
+        mimeType: m.mimeType,
+        folderId: toFolderId,
+        userPlanId: newPlanId,
+        uploadedBy: m.uploadedBy,
+      });
+      copied++;
+    }
+
+    if (toId === 'default') {
+      const defaultSum = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: null },
+        raw: true,
+      });
+      const usedBytes = Number(defaultSum[0]?.total) || 0;
+      const usedGB = usedBytes / BYTES_PER_GB;
+      let storage = await Storage.findOne({ where: { userId } });
+      if (storage) {
+        await storage.update({
+          usedStorage: usedGB,
+          availableStorage: Math.max(0, parseFloat(storage.totalStorage) - usedGB),
+        });
+      }
+    } else {
+      const sum = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'total']],
+        where: { userId, userPlanId: newPlanId },
+        raw: true,
+      });
+      const used = Math.max(0, Number(sum[0]?.total) || 0);
+      const plan = await UserStoragePlan.findByPk(newPlanId);
+      if (plan) await plan.update({ usedStorage: used });
+    }
+
+    res.json({ success: true, copiedCount: copied, toPlan: toId });
+  } catch (error) {
+    console.error('Copy media error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
