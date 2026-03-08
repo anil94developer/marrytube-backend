@@ -58,10 +58,13 @@ router.get('/list', async (req, res) => {
       where.category = category;
     }
 
-    if (folderId === '') {
-      where.folderId = null;
-    } else if (folderId) {
-      where.folderId = parseInt(folderId);
+    if (folderId !== undefined && folderId !== null) {
+      if (folderId === '' || folderId === 'null') {
+        where.folderId = null;
+      } else {
+        const fid = parseInt(folderId, 10);
+        if (!Number.isNaN(fid)) where.folderId = fid;
+      }
     }
 
     const media = await Media.findAll({
@@ -109,21 +112,23 @@ router.get('/:mediaId', async (req, res) => {
   }
 });
 
-// Update media (rename and/or move to folder)
+// Update media (rename and/or move to folder) — MOVE = update one row's folderId, no copy
 router.patch('/:mediaId', [
   body('name').optional().trim().notEmpty().withMessage('Media name cannot be empty'),
   body('folderId').optional(),
 ], async (req, res) => {
   try {
-    const { mediaId } = req.params;
+    const mediaIdNum = parseInt(req.params.mediaId, 10);
+    if (Number.isNaN(mediaIdNum)) return res.status(400).json({ success: false, message: 'Invalid media id' });
     const userId = req.user.id;
-    const media = await Media.findOne({ where: { id: parseInt(mediaId), userId } });
+    const media = await Media.findOne({ where: { id: mediaIdNum, userId } });
     if (!media) return res.status(404).json({ success: false, message: 'Media not found' });
 
+    const updates = {};
     if (req.body.name !== undefined) {
       const name = (req.body.name && typeof req.body.name === 'string') ? req.body.name.trim() : '';
       if (!name) return res.status(400).json({ success: false, message: 'Media name cannot be empty' });
-      media.name = name;
+      updates.name = name;
     }
     if (req.body.folderId !== undefined) {
       const raw = req.body.folderId;
@@ -133,14 +138,23 @@ router.patch('/:mediaId', [
         if (!Number.isNaN(fid)) {
           const folder = await Folder.findOne({ where: { id: fid, userId } });
           if (!folder) return res.status(400).json({ success: false, message: 'Folder not found' });
-          if (folder.userPlanId !== media.userPlanId) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
+          const mediaPlan = media.userPlanId == null ? null : Number(media.userPlanId);
+          const folderPlan = folder.userPlanId == null ? null : Number(folder.userPlanId);
+          if (mediaPlan !== folderPlan) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
           newFolderId = folder.id;
         }
       }
-      media.folderId = newFolderId;
+      updates.folderId = newFolderId;
     }
-    await media.save();
-    res.json(media);
+    if (Object.keys(updates).length === 0) return res.json(media);
+
+    const [affectedRows] = await Media.update(updates, { where: { id: mediaIdNum, userId } });
+    if (affectedRows === 0) return res.status(404).json({ success: false, message: 'Media not found' });
+    const updated = await Media.findOne({
+      where: { id: mediaIdNum, userId },
+      include: [{ model: Folder, as: 'folder', attributes: ['id', 'name'], required: false }],
+    });
+    res.json(updated);
   } catch (error) {
     console.error('Update media error:', error);
     res.status(500).json({ success: false, message: error.message || 'Server error' });
@@ -164,7 +178,9 @@ router.post('/:mediaId/copy', [
       if (!Number.isNaN(fid)) {
         const folder = await Folder.findOne({ where: { id: fid, userId } });
         if (!folder) return res.status(400).json({ success: false, message: 'Folder not found' });
-        if (folder.userPlanId !== media.userPlanId) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
+        const mediaPlan = media.userPlanId == null ? null : Number(media.userPlanId);
+        const folderPlan = folder.userPlanId == null ? null : Number(folder.userPlanId);
+        if (mediaPlan !== folderPlan) return res.status(400).json({ success: false, message: 'Folder must be on same drive' });
         folderId = folder.id;
       }
     }
