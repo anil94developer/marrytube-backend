@@ -1,0 +1,17 @@
+node_modules/
+dist/
+build/
+.next/
+.cache/
+
+*.log
+*.env
+*.zip
+*.png
+*.jpg
+*.mp4
+
+coverage/
+tmp/
+temp/
+uploads/
