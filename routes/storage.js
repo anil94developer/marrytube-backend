@@ -2,7 +2,7 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { fn, col } = require('sequelize');
-const { Storage, StoragePlan, Media, UserStoragePlan, Folder, User } = require('../models');
+const { Storage, StoragePlan, Media, UserStoragePlan, Folder, User, Transaction } = require('../models');
 const { authMiddleware } = require('../middleware/auth');
 
 const router = express.Router();
@@ -13,6 +13,7 @@ const pendingOrders = new Map();
 
 // Use production API when CASHFREE_ENV=PRODUCTION or when secret key looks like production (cfsk_ma_prod_*)
 const getCashfreeBase = () => {
+  if (process.env.CASHFREE_BASE_URL) return process.env.CASHFREE_BASE_URL.replace(/\/$/, '');
   if (process.env.CASHFREE_ENV === 'PRODUCTION') return 'https://api.cashfree.com/pg';
   const secret = process.env.CASHFREE_SECRET_KEY || '';
   if (secret.includes('_prod_') || secret.startsWith('cfsk_ma_prod_')) return 'https://api.cashfree.com/pg';
@@ -52,6 +53,47 @@ router.get('/dashboard', authMiddleware, async (req, res) => {
     });
   } catch (error) {
     console.error('Get storage dashboard error:', error);
+    res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+// Get current user's transactions (purchase history)
+router.get('/transactions', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const limit = Math.min(parseInt(req.query.limit, 10) || 50, 100);
+    const offset = parseInt(req.query.offset, 10) || 0;
+    const { rows, count } = await Transaction.findAndCountAll({
+      where: { userId },
+      order: [['createdAt', 'DESC']],
+      limit,
+      offset,
+    });
+    const planIds = [...new Set(rows.map((t) => t.planId).filter(Boolean))];
+    const plans = planIds.length ? await StoragePlan.findAll({ where: { id: planIds }, raw: true }) : [];
+    const planMap = Object.fromEntries(plans.map((p) => [p.id, p]));
+    res.json({
+      transactions: rows.map((t) => {
+        const plan = t.planId ? planMap[t.planId] : null;
+        return {
+          id: t.id,
+          orderId: t.orderId,
+          amount: parseFloat(t.amount),
+          currency: t.currency,
+          storage: parseFloat(t.storage),
+          period: t.period,
+          planId: t.planId,
+          plan: plan ? { id: plan.id, storage: parseFloat(plan.storage), period: plan.period, price: parseFloat(plan.price), category: plan.category } : null,
+          status: t.status,
+          paymentGateway: t.paymentGateway,
+          description: t.description,
+          createdAt: t.createdAt,
+        };
+      }),
+      total: count,
+    });
+  } catch (error) {
+    console.error('Get transactions error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
   }
 });
@@ -125,30 +167,34 @@ router.get('/my-plans', authMiddleware, async (req, res) => {
       return res.json(plansWithUsed);
     }
 
-    // No UserStoragePlan: return one "default" drive from Storage (0 GB for new users — no free storage)
-    // let storage = await Storage.findOne({ where: { userId } });
-    // if (!storage) {
-    //   storage = await Storage.create({
-    //     userId,
-    //     totalStorage: 0,
-    //     usedStorage: 0,
-    //     availableStorage: 0,
-    //   });
-    // }
-    // const totalGB = parseFloat(storage.totalStorage) || 0;
-    // const usedGB = parseFloat(storage.usedStorage) || 0;
-    // const defaultDrive = {
-    //   id: 'default',
-    //   userId,
-    //   totalStorage: totalGB,
-    //   usedStorage: Math.round(usedGB * BYTES_PER_GB),
-    //   availableStorage: Math.max(0, totalGB - usedGB),
-    //   expiryDate: null,
-    //   createdAt: storage.createdAt,
-    //   status: 'active',
-    //   isDefault: true,
-    // };
-    // res.json([defaultDrive]);
+    // No UserStoragePlan: return one "default" drive with 1 GB free so upload works without purchase
+    let storage = await Storage.findOne({ where: { userId } });
+    if (!storage) {
+      storage = await Storage.create({
+        userId,
+        totalStorage: 1,
+        usedStorage: 0,
+        availableStorage: 1,
+      });
+    } else if (parseFloat(storage.totalStorage) === 0 && parseFloat(storage.usedStorage) === 0) {
+      await storage.update({ totalStorage: 1, availableStorage: 1 });
+      storage.totalStorage = 1;
+      storage.availableStorage = 1;
+    }
+    const totalGB = parseFloat(storage.totalStorage) || 0;
+    const usedGB = parseFloat(storage.usedStorage) || 0;
+    const defaultDrive = {
+      id: 'default',
+      userId,
+      totalStorage: totalGB,
+      usedStorage: usedGB * BYTES_PER_GB,
+      availableStorage: Math.max(0, totalGB - usedGB),
+      expiryDate: null,
+      createdAt: storage.createdAt,
+      status: 'active',
+      isDefault: true,
+    };
+    return res.json([defaultDrive]);
   } catch (error) {
     console.error('Get my plans error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
@@ -251,8 +297,9 @@ router.post('/create-order', authMiddleware, [
     const orderAmount = parseFloat(price).toFixed(2);
     const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:3001';
     let returnUrlFinal = returnUrl || `${frontendOrigin}/storage-plans?order_id=${orderId}&payment=success`;
-    // Cashfree requires HTTPS return_url: rewrite http -> https (for localhost use https://localhost)
-    if (returnUrlFinal.startsWith('http://')) {
+    // Cashfree production requires HTTPS. For localhost keep http so redirect works (no SSL on dev).
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(returnUrlFinal) || returnUrlFinal.includes('localhost') || returnUrlFinal.includes('127.0.0.1');
+    if (!isLocalhost && returnUrlFinal.startsWith('http://')) {
       returnUrlFinal = returnUrlFinal.replace(/^http:\/\//, 'https://');
     }
 
@@ -272,11 +319,25 @@ router.post('/create-order', authMiddleware, [
       },
     };
 
-    const cfRes = await fetch(`${getCashfreeBase()}/orders`, {
-      method: 'POST',
-      headers: CASHFREE_HEADERS(),
-      body: JSON.stringify(payload),
-    });
+    let cfRes;
+    try {
+      cfRes = await fetch(`${getCashfreeBase()}/orders`, {
+        method: 'POST',
+        headers: CASHFREE_HEADERS(),
+        body: JSON.stringify(payload),
+      });
+    } catch (fetchErr) {
+      const cause = fetchErr.cause || fetchErr;
+      const isNetwork = cause.code === 'ENOTFOUND' || cause.code === 'ECONNREFUSED' || cause.message?.includes('fetch failed');
+      console.error('Cashfree create order error:', fetchErr);
+      if (isNetwork) {
+        return res.status(503).json({
+          success: false,
+          message: 'Cannot reach Cashfree (network or DNS). Check internet, firewall, or use CASHFREE_BASE_URL in .env. For production use CASHFREE_ENV=PRODUCTION.',
+        });
+      }
+      throw fetchErr;
+    }
     const data = await cfRes.json();
     if (!cfRes.ok || !data.payment_session_id) {
       console.error('Cashfree create order error:', data);
@@ -295,9 +356,26 @@ router.post('/create-order', authMiddleware, [
       price: parseFloat(price),
     });
 
+    try {
+      await Transaction.create({
+        userId,
+        orderId: data.order_id || orderId,
+        amount: parseFloat(orderAmount),
+        currency: 'INR',
+        storage: parseFloat(storage),
+        period: period || 'month',
+        planId: planId != null && planId !== '' ? parseInt(planId, 10) : null,
+        status: 'pending',
+        paymentGateway: 'cashfree',
+        description: `Storage ${storage} GB (${period || 'month'})`,
+      });
+    } catch (txErr) {
+      console.error('Transaction create (pending) error:', txErr.message);
+    }
+
     res.json({
       success: true,
-      orderId: data.order_id,
+      orderId: data.order_id || orderId,
       paymentSessionId: data.payment_session_id,
       returnUrl: returnUrlFinal,
       cashfreeMode: getCashfreeMode(),
@@ -335,6 +413,15 @@ router.post('/payment-success', authMiddleware, [
       pending.planId
     );
     pendingOrders.delete(order_id);
+
+    try {
+      const tx = await Transaction.findOne({ where: { orderId: order_id, userId } });
+      if (tx) {
+        await tx.update({ status: 'success' });
+      }
+    } catch (txErr) {
+      console.error('Transaction update (success) error:', txErr.message);
+    }
 
     res.json({
       success: true,

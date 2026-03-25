@@ -2,7 +2,7 @@ const express = require('express');
 const path = require('path');
 const cors = require('cors');
 const dotenv = require('dotenv');
-const { connectDB } = require('./config/database');
+const { connectDB, getDbStatus } = require('./config/database');
 
 // Load environment variables
 dotenv.config();
@@ -54,6 +54,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 // Routes
+const { getBackblazeStatus } = require('./services/s3Service');
 const authRoutes = require('./routes/auth');
 const mediaRoutes = require('./routes/media');
 const storageRoutes = require('./routes/storage');
@@ -70,30 +71,45 @@ app.use('/api/share', shareRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'OK', message: 'Server is running' });
+  res.json({ status: 'OK', message: 'Server is running', db: getDbStatus() });
 });
 
 // Start server
 const PORT = process.env.PORT || 5000;
 
-connectDB().then(() => {
-  const server = app.listen(PORT, () => {
-    console.log(`✅ Server is running on port ${PORT}`);
-    console.log(`📍 API Health Check: http://localhost:${PORT}/api/health`);
-  });
+// Try DB connection, but don't block server startup.
+connectDB().then((ok) => {
+  if (!ok) console.warn('⚠️  Starting server without DB connection (will retry on restart).');
+}).catch((err) => {
+  console.warn('⚠️  DB connection failed at startup:', err?.message || err);
+});
 
-  // Handle port already in use error
-  server.on('error', (error) => {
-    if (error.code === 'EADDRINUSE') {
-      console.error(`\n❌ Port ${PORT} is already in use!`);
-      console.error('Solution:');
-      console.error(`1. Kill the process: lsof -ti:${PORT} | xargs kill -9`);
-      console.error(`2. Or use a different port: PORT=5001 node server.js`);
-      process.exit(1);
-    } else {
-      throw error;
-    }
-  });
+const server = app.listen(PORT, () => {
+  console.log(`✅ Server is running on port ${PORT}`);
+  console.log(`📍 API Health Check: http://localhost:${PORT}/api/health`);
+  const b2 = getBackblazeStatus();
+  if (b2.configured) {
+    console.log(`📦 Backblaze B2: configured (endpoint=${b2.endpoint}, bucket=${b2.bucket}, keyId=${b2.keyIdPrefix})`);
+  } else {
+    console.log('📦 Backblaze B2: not configured —', b2.hint || 'check .env');
+  }
+});
+// Prevent chunk upload / merge from being killed by default timeout (10 min)
+server.timeout = 10 * 60 * 1000;
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
+
+// Handle port already in use error
+server.on('error', (error) => {
+  if (error.code === 'EADDRINUSE') {
+    console.error(`\n❌ Port ${PORT} is already in use!`);
+    console.error('Solution:');
+    console.error(`1. Kill the process: lsof -ti:${PORT} | xargs kill -9`);
+    console.error(`2. Or use a different port: PORT=5001 node server.js`);
+    process.exit(1);
+  } else {
+    throw error;
+  }
 });
 
 module.exports = app;

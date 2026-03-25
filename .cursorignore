@@ -4,8 +4,7 @@ build/
 .next/
 .cache/
 
-*.log
-*.env
+*.log 
 *.zip
 *.png
 *.jpg

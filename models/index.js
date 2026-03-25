@@ -12,9 +12,11 @@ const StudioClient = require('./StudioClient');
 const FundRequest = require('./FundRequest');
 const AppSetting = require('./AppSetting');
 const Share = require('./Share');
+const Transaction = require('./Transaction');
 
 // Define associations
 User.hasMany(Media, { foreignKey: 'userId', as: 'media' });
+User.hasMany(Transaction, { foreignKey: 'userId', as: 'transactions' });
 User.hasOne(Storage, { foreignKey: 'userId', as: 'storage' });
 User.hasMany(Folder, { foreignKey: 'userId', as: 'folders' });
 User.hasMany(StudioClient, { foreignKey: 'studioId', as: 'studioClients' });
@@ -36,5 +38,6 @@ module.exports = {
   UserStoragePlan,
   AppSetting,
   Share,
+  Transaction,
 };
 

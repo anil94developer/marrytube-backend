@@ -125,6 +125,15 @@ router.post('/studio/login', [
       return res.status(401).json({ success: false, message: 'Invalid credentials' });
     }
 
+    if (!user.isActive) {
+      return res.status(403).json({
+        success: false,
+        message:
+          'Your studio account is pending admin approval. You cannot sign in until it is approved.',
+        pendingApproval: true,
+      });
+    }
+
     const token = generateToken(user.id);
     const userData = user.toJSON();
 

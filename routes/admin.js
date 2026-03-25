@@ -4,6 +4,7 @@ const { Op } = require('sequelize');
 const { User, Media, Storage, StoragePlan, UserStoragePlan, StudioClient, FundRequest } = require('../models');
 const { authMiddleware, adminMiddleware } = require('../middleware/auth');
 const { getCommissionPerGB, setCommissionPerGB } = require('../services/commissionService');
+const { sendStudioAccountApprovedEmail } = require('../services/studioEmailService');
 
 const router = express.Router();
 
@@ -137,7 +138,21 @@ router.patch('/studios/:studioId/approve', [
     const studio = await User.findOne({ where: { id: parseInt(studioId), userType: 'studio' } });
     if (!studio) return res.status(404).json({ success: false, message: 'Studio not found' });
 
+    const wasInactive = !studio.isActive;
     await studio.update({ isActive });
+
+    if (isActive && wasInactive && studio.email) {
+      try {
+        await sendStudioAccountApprovedEmail({
+          toEmail: studio.email,
+          name: studio.name,
+        });
+      } catch (mailErr) {
+        console.warn('Studio approval email failed:', mailErr.message);
+      }
+    }
+
+    await studio.reload();
     res.json({ success: true, studio });
   } catch (error) {
     console.error('Approve studio error:', error);

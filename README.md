@@ -132,6 +132,8 @@ The server will start on `http://localhost:5001` (or the port specified in `.env
 
 ## API Endpoints
 
+**Public studio & auth examples (no repo token):** see [`docs/API_STUDIO_PUBLIC.md`](docs/API_STUDIO_PUBLIC.md).
+
 ### Authentication
 - `POST /api/auth/send-otp` - Send OTP
 - `POST /api/auth/verify-otp` - Verify OTP and login/register

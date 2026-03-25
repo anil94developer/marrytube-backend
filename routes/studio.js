@@ -9,6 +9,7 @@ const { authMiddleware, studioMiddleware } = require('../middleware/auth');
 const { generateUploadURL, deleteFile } = require('../services/s3Service');
 const { getCommissionPerGB } = require('../services/commissionService');
 const { getBankDetails, setBankDetails } = require('../services/studioBankService');
+const { sendStudioRegistrationPendingEmail } = require('../services/studioEmailService');
 const router = express.Router();
 
 /** Expiry = purchase date + period. Handles month-end (e.g. Jan 31 + 1 month = Feb 28). */
@@ -251,15 +252,75 @@ router.post('/register', [
 
     const { email, name, password, mobile, city, address, pincode } = req.body;
 
-    // Check duplicates by email or mobile
-    const existing = await User.findOne({ where: { [Op.or]: [{ email }, { mobile }] } });
+    // Check duplicates by email or mobile (only include mobile in OR when provided — undefined breaks Sequelize/MySQL OR)
+    const orConditions = [{ email }];
+    if (mobile != null && String(mobile).trim() !== '') {
+      orConditions.push({ mobile: String(mobile).trim() });
+    }
+    const existing = await User.findOne({ where: { [Op.or]: orConditions } });
     if (existing) return res.status(400).json({ success: false, message: 'Email or mobile already used' });
 
-    const studio = await User.create({ email, name, mobile, password, userType: 'studio', isActive: false, city, address, pincode });
-    return res.json({ success: true, studio });
+    const studio = await User.create({
+      email,
+      name,
+      mobile: mobile != null && String(mobile).trim() !== '' ? String(mobile).trim() : null,
+      password,
+      userType: 'studio',
+      isActive: false,
+      city,
+      address,
+      pincode,
+    });
+
+    let emailSent = false;
+    let emailNotice = null;
+    try {
+      const mailResult = await sendStudioRegistrationPendingEmail({
+        toEmail: email,
+        name: studio.name || name,
+        studioId: studio.id,
+      });
+      emailSent = !!mailResult.success;
+      if (!mailResult.success) {
+        emailNotice = mailResult.message || 'Email could not be sent (check SMTP in .env).';
+        console.warn('Studio registration email:', emailNotice);
+      }
+    } catch (mailErr) {
+      console.error('Studio registration email error:', mailErr);
+      emailNotice = 'Registration saved, but confirmation email failed.';
+    }
+
+    return res.json({
+      success: true,
+      studio,
+      emailSent,
+      ...(emailNotice ? { message: emailNotice } : {}),
+    });
   } catch (error) {
     console.error('Studio registration error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    if (error.name === 'SequelizeValidationError') {
+      return res.status(400).json({
+        success: false,
+        message: 'Validation failed',
+        errors: error.errors?.map((e) => ({ field: e.path, message: e.message })) || [],
+      });
+    }
+    if (error.name === 'SequelizeUniqueConstraintError') {
+      return res.status(400).json({ success: false, message: 'Email or mobile already used' });
+    }
+    const sqlMsg = error.parent?.sqlMessage || error.original?.sqlMessage;
+    const hint =
+      sqlMsg && /Data truncated|ENUM|userType/i.test(sqlMsg)
+        ? 'If userType fails: run SQL to add studio to ENUM — see docs/FIX_USER_TYPE_ENUM.md'
+        : undefined;
+    const detail =
+      process.env.NODE_ENV !== 'production' ? sqlMsg || error.message : undefined;
+    res.status(500).json({
+      success: false,
+      message: 'Server error',
+      ...(detail && { detail }),
+      ...(hint && { hint }),
+    });
   }
 });
 

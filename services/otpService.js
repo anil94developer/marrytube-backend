@@ -152,6 +152,30 @@ const sendEmailOTP = async (email, otp) => {
   }
 };
 
+/**
+ * Generic HTML email (transactional). Used by studio registration, etc.
+ * @param {{ to: string, subject: string, html: string, text?: string, bcc?: string }} opts
+ */
+const sendHtmlEmail = async ({ to, subject, html, text, bcc }) => {
+  if (!emailTransporter) {
+    return { success: false, message: 'Email not configured. Set EMAIL_USER and EMAIL_PASS in .env.' };
+  }
+  try {
+    await emailTransporter.sendMail({
+      from: `"MarryTube" <${emailUser}>`,
+      to,
+      bcc: bcc || undefined,
+      subject,
+      html,
+      text: text || html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    });
+    return { success: true, message: 'Email sent' };
+  } catch (error) {
+    console.error('sendHtmlEmail error:', error.message);
+    return { success: false, message: error.message || 'Failed to send email' };
+  }
+};
+
 // Create and send OTP
 const createAndSendOTP = async (identifier, type) => {
   try {
@@ -227,5 +251,6 @@ module.exports = {
   createAndSendOTP,
   verifyOTP,
   generateOTP,
+  sendHtmlEmail,
 };
 

@@ -29,17 +29,21 @@ const sequelize = new Sequelize(
   }
 );
 
+let dbConnected = false;
+
 // Test connection
 const connectDB = async () => {
   try {
     await sequelize.authenticate();
     console.log('MySQL connected successfully');
+    dbConnected = true;
     
     // Sync models (set to false in production, use migrations instead)
     if (process.env.NODE_ENV === 'development') {
       await sequelize.sync({ alter: false }); // Set to true to auto-update tables
     }
   } catch (error) {
+    dbConnected = false;
     console.error('MySQL connection error:', error.message);
     
     // Provide helpful error messages
@@ -70,9 +74,15 @@ const connectDB = async () => {
       }
     }
     
-    process.exit(1);
+    // Do not crash the whole server on DB errors.
+    // Many routes depend on DB and will fail until DB is back,
+    // but keeping the server up helps debugging (e.g. S3/Backblaze).
+    return false;
   }
+  return true;
 };
 
-module.exports = { sequelize, connectDB };
+const getDbStatus = () => ({ connected: dbConnected });
+
+module.exports = { sequelize, connectDB, getDbStatus };
 
