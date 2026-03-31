@@ -4,9 +4,9 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { fn, col } = require('sequelize');
-const { StudioClient, Media, Storage, FundRequest, User, StoragePlan, UserStoragePlan } = require('../models');
+const { StudioClient, Media, Storage, FundRequest, User, StoragePlan, UserStoragePlan, Folder } = require('../models');
 const { authMiddleware, studioMiddleware } = require('../middleware/auth');
-const { generateUploadURL, deleteFile } = require('../services/s3Service');
+const { generateUploadURL, deleteFile, uploadBufferToS3, uploadFileToS3, isS3Configured } = require('../services/s3Service');
 const { getCommissionPerGB } = require('../services/commissionService');
 const { getBankDetails, setBankDetails } = require('../services/studioBankService');
 const { sendStudioRegistrationPendingEmail } = require('../services/studioEmailService');
@@ -32,107 +32,352 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Multer storage config for dynamic folder path
-const storage = multer.diskStorage({
-  destination: async function (req, file, cb) {
-    try {
-      const { clientId } = req.params;
-      const { userPlanId, folderId } = req.body;
-      const client = await require('../models').StudioClient.findByPk(clientId);
-      if (!client) return cb(new Error('Client not found'));
-      let folderName = 'root';
-      if (folderId) {
-        const folder = await require('../models').Folder.findByPk(folderId);
-        if (folder) folderName = folder.name;
-      }
-      const uploadPath = path.join(__dirname, '..', 'upload', String(client.userId), String(userPlanId || 'no-plan'), folderName);
-      require('fs').mkdirSync(uploadPath, { recursive: true });
-      cb(null, uploadPath);
-    } catch (err) {
-      cb(err);
-    }
-  },
-  filename: function (req, file, cb) {
-    cb(null, Date.now() + '-' + file.originalname);
-  }
+const upload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
-const upload = multer({ storage });
+const studioChunkUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+const STUDIO_CHUNKS_DIR = path.join(__dirname, '..', 'chunks', 'studio');
+try { fs.mkdirSync(STUDIO_CHUNKS_DIR, { recursive: true }); } catch (_) { }
 
-// Upload media file for a client, userPlanId, and folderId
-router.post('/clients/:clientId/uploadMedia', upload.single('media'), async (req, res) => {
+const getStudioChunkDir = (uploadId) => path.join(STUDIO_CHUNKS_DIR, String(uploadId).replace(/[^a-zA-Z0-9_-]/g, ''));
+const getStudioChunkMetaPath = (uploadId) => path.join(getStudioChunkDir(uploadId), 'meta.json');
+
+/** Quota check before writing to B2 (avoids orphan objects). */
+async function validateStudioUploadEligibility({ clientUserId, fileSize, userPlanId }) {
+  const sizeInGB = fileSize / (1024 * 1024 * 1024);
+  if (userPlanId) {
+    const plan = await UserStoragePlan.findOne({ where: { id: parseInt(userPlanId, 10), userId: clientUserId } });
+    if (!plan) return { error: { status: 400, message: 'Invalid user plan for this client' } };
+    const totalBytes = (parseFloat(plan.totalStorage) || 0) * (1024 * 1024 * 1024);
+    const usedBytes = Number(plan.usedStorage) || 0;
+    if (usedBytes + fileSize > totalBytes) return { error: { status: 400, message: 'Insufficient space in this drive' } };
+  } else {
+    const storage = await Storage.findOne({ where: { userId: clientUserId } });
+    if (!storage || parseFloat(storage.availableStorage) < sizeInGB) {
+      return { error: { status: 400, message: 'Insufficient storage space' } };
+    }
+  }
+  return { ok: true };
+}
+
+async function saveStudioMediaAndStorage({ studioUserId, clientUserId, fileName, mimeType, fileSize, userPlanId, folderId, s3Key, url }) {
+  const sizeInGB = fileSize / (1024 * 1024 * 1024);
+  let folderIdValue = null;
+  if (folderId) {
+    const folder = await Folder.findOne({ where: { id: parseInt(folderId, 10), userId: clientUserId } });
+    if (folder) folderIdValue = folder.id;
+  }
+
+  let planIdToSet = null;
+  let planStorage = null;
+  if (userPlanId) {
+    const plan = await UserStoragePlan.findOne({ where: { id: parseInt(userPlanId, 10), userId: clientUserId } });
+    if (!plan) return { error: { status: 400, message: 'Invalid user plan for this client' } };
+
+    const totalBytes = (parseFloat(plan.totalStorage) || 0) * (1024 * 1024 * 1024);
+    const usedBytes = Number(plan.usedStorage) || 0;
+    if (usedBytes + fileSize > totalBytes) return { error: { status: 400, message: 'Insufficient space in this drive' } };
+
+    planIdToSet = plan.id;
+  } else {
+    const storage = await Storage.findOne({ where: { userId: clientUserId } });
+    if (!storage || parseFloat(storage.availableStorage) < sizeInGB) {
+      return { error: { status: 400, message: 'Insufficient storage space' } };
+    }
+  }
+
+  const media = await Media.create({
+    userId: clientUserId,
+    userPlanId: planIdToSet,
+    folderId: folderIdValue,
+    name: fileName,
+    url,
+    s3Key,
+    mimeType,
+    size: fileSize,
+    category: mimeType.startsWith('video/') ? 'video' : 'image',
+  });
+
+  if (planIdToSet) {
+    const plan = await UserStoragePlan.findByPk(planIdToSet);
+    if (plan) {
+      const sumRows = await Media.findAll({
+        attributes: [[fn('SUM', col('size')), 'totalBytes']],
+        where: { userId: clientUserId, userPlanId: plan.id },
+        raw: true,
+      });
+      const usedBytes = Math.max(0, Number(sumRows[0]?.totalBytes) || 0);
+      plan.usedStorage = usedBytes;
+      await plan.save();
+      const totalGB = Number(plan.totalStorage) || 0;
+      const usedGB = usedBytes / (1024 * 1024 * 1024);
+      planStorage = {
+        planId: plan.id,
+        usedStorage: usedBytes,
+        totalStorage: totalGB,
+        usedStorageGB: usedGB,
+        availableStorageGB: Math.max(0, totalGB - usedGB),
+      };
+    }
+  } else {
+    let storage = await Storage.findOne({ where: { userId: clientUserId } });
+    if (!storage) storage = await Storage.create({ userId: clientUserId, totalStorage: 0, usedStorage: 0, availableStorage: 0 });
+    const newUsed = parseFloat(storage.usedStorage) + sizeInGB;
+    await storage.update({
+      usedStorage: newUsed,
+      availableStorage: parseFloat(storage.totalStorage) - newUsed,
+    });
+  }
+
+  const commissionPerGB = await getCommissionPerGB();
+  if (commissionPerGB > 0 && studioUserId) {
+    const studio = await User.findByPk(studioUserId);
+    if (studio) {
+      const current = parseFloat(studio.earnings) || 0;
+      studio.earnings = current + (sizeInGB * commissionPerGB);
+      await studio.save();
+    }
+  }
+  return { media, planStorage };
+}
+
+// Upload media for client (Backblaze B2 direct upload, no local file storage)
+router.post('/clients/:clientId/uploadMedia', authMiddleware, studioMiddleware, upload.single('media'), async (req, res) => {
   try {
+    if (!isS3Configured()) return res.status(503).json({ success: false, message: 'Backblaze B2 not configured' });
+    if (!req.file || !req.file.buffer) return res.status(400).json({ success: false, message: 'No media file' });
     const { clientId } = req.params;
     const { userPlanId, folderId } = req.body;
-    const client = await require('../models').StudioClient.findByPk(clientId);
+    const client = await StudioClient.findOne({ where: { id: parseInt(clientId, 10), studioId: req.user.id } });
     if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
-    let folderName = 'root';
-    let folderIdValue = null;
-    if (folderId) {
-      const folder = await require('../models').Folder.findByPk(folderId);
-      if (folder) {
-        folderName = folder.name;
-        folderIdValue = folder.id;
-      }
-    }
-    // Save metadata in Media table
-    const media = await require('../models').Media.create({
-      userId: client.userId,
+
+    const pre = await validateStudioUploadEligibility({
+      clientUserId: client.userId,
+      fileSize: req.file.size,
       userPlanId: userPlanId || null,
-      folderId: folderIdValue,
-      name: req.file.originalname,
-      url: `/upload/${client.userId}/${userPlanId || 'no-plan'}/${folderName}/${req.file.filename}`,
-      s3Key: req.file.filename,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      category: req.file.mimetype.startsWith('video/') ? 'video' : 'image',
     });
+    if (pre.error) return res.status(pre.error.status).json({ success: false, message: pre.error.message });
 
-    // Update usedStorage in UserStoragePlan and return updated plan storage for frontend
-    let planStorage = null;
-    if (userPlanId) {
-      const plan = await require('../models').UserStoragePlan.findByPk(userPlanId);
-      if (plan) {
-        plan.usedStorage = (plan.usedStorage || 0) + req.file.size;
-        await plan.save();
-        // Recompute from Media so DB and response are in sync with actual files
-        const sumRows = await Media.findAll({
-          attributes: [[fn('SUM', col('size')), 'totalBytes']],
-          where: { userId: client.userId, userPlanId: plan.id },
-          raw: true,
-        });
-        const usedBytes = Math.max(0, Number(sumRows[0]?.totalBytes) || plan.usedStorage);
-        plan.usedStorage = usedBytes;
-        await plan.save();
-        const totalGB = Number(plan.totalStorage) || 0;
-        const usedGB = usedBytes / (1024 * 1024 * 1024);
-        planStorage = {
-          planId: plan.id,
-          usedStorage: usedBytes,
-          totalStorage: totalGB,
-          usedStorageGB: usedGB,
-          availableStorageGB: Math.max(0, totalGB - usedGB),
-        };
-      }
+    const uploadMeta = await generateUploadURL(
+      req.file.originalname,
+      req.file.mimetype || 'application/octet-stream',
+      client.userId,
+      userPlanId || null,
+      folderId || null
+    );
+    try {
+      await uploadBufferToS3(uploadMeta.s3Key, req.file.buffer, req.file.mimetype);
+    } catch (e) {
+      try { await deleteFile(uploadMeta.s3Key); } catch (_) { }
+      throw e;
     }
-
-    // Studio earnings: add (upload size in GB × admin commission per GB from DB)
-    const commissionPerGB = await getCommissionPerGB();
-    if (commissionPerGB > 0 && req.user && req.user.id) {
-      const sizeInGB = req.file.size / (1024 * 1024 * 1024);
-      const earningsToAdd = sizeInGB * commissionPerGB;
-      const studio = await User.findByPk(req.user.id);
-      if (studio) {
-        const current = parseFloat(studio.earnings) || 0;
-        studio.earnings = current + earningsToAdd;
-        await studio.save();
-      }
+    const saved = await saveStudioMediaAndStorage({
+      studioUserId: req.user.id,
+      clientUserId: client.userId,
+      fileName: req.file.originalname,
+      mimeType: req.file.mimetype || 'application/octet-stream',
+      fileSize: req.file.size,
+      userPlanId: userPlanId || null,
+      folderId: folderId || null,
+      s3Key: uploadMeta.s3Key,
+      url: uploadMeta.url,
+    });
+    if (saved.error) {
+      try { await deleteFile(uploadMeta.s3Key); } catch (_) { }
+      return res.status(saved.error.status).json({ success: false, message: saved.error.message });
     }
-
-    res.json({ success: true, media, planStorage });
+    res.json({ success: true, media: saved.media, planStorage: saved.planStorage });
   } catch (error) {
     console.error('Upload media error:', error);
     res.status(500).json({ success: false, message: 'Server error' });
+  }
+});
+
+router.get('/clients/:clientId/chunk-upload-status', authMiddleware, studioMiddleware, async (req, res) => {
+  const { clientId } = req.params;
+  const uploadId = (req.query.uploadId || '').trim();
+  const empty = () => res.json({ uploadId: uploadId || '', receivedChunks: [], totalChunks: null, meta: null });
+  if (!uploadId) return res.status(400).json({ success: false, message: 'uploadId required' });
+  const client = await StudioClient.findOne({ where: { id: parseInt(clientId, 10), studioId: req.user.id } });
+  if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+  try {
+    const dir = getStudioChunkDir(uploadId);
+    if (!fs.existsSync(dir)) return empty();
+    let meta = null;
+    const metaPath = getStudioChunkMetaPath(uploadId);
+    if (fs.existsSync(metaPath)) {
+      try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch (_) { }
+    }
+    if (meta && (meta.clientId !== client.id || meta.studioUserId !== req.user.id)) return res.status(403).json({ success: false, message: 'Forbidden' });
+    const receivedChunks = [];
+    fs.readdirSync(dir).forEach((f) => {
+      const n = parseInt(f, 10);
+      if (!Number.isNaN(n) && f === String(n)) receivedChunks.push(n);
+    });
+    receivedChunks.sort((a, b) => a - b);
+    return res.json({
+      uploadId,
+      receivedChunks,
+      totalChunks: meta ? meta.totalChunks : null,
+      meta: meta ? { fileName: meta.fileName, fileSize: meta.fileSize, mimeType: meta.mimeType } : null,
+    });
+  } catch (_) {
+    return empty();
+  }
+});
+
+router.post('/clients/:clientId/upload-chunk', authMiddleware, studioMiddleware, studioChunkUpload.single('chunk'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) return res.status(400).json({ success: false, message: 'No chunk file' });
+    const { clientId } = req.params;
+    const client = await StudioClient.findOne({ where: { id: parseInt(clientId, 10), studioId: req.user.id } });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const { uploadId, chunkIndex, totalChunks, fileName, fileSize, mimeType, userPlanId, folderId } = req.body || {};
+    if (!uploadId || chunkIndex === undefined || totalChunks === undefined) {
+      return res.status(400).json({ success: false, message: 'uploadId, chunkIndex, totalChunks required' });
+    }
+    const idx = parseInt(chunkIndex, 10);
+    const total = parseInt(totalChunks, 10);
+    if (Number.isNaN(idx) || Number.isNaN(total) || idx < 0 || total < 1 || idx >= total) {
+      return res.status(400).json({ success: false, message: 'Invalid chunkIndex or totalChunks' });
+    }
+    const dir = getStudioChunkDir(uploadId);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, String(idx)), req.file.buffer);
+    const metaPath = getStudioChunkMetaPath(uploadId);
+    if (!fs.existsSync(metaPath)) {
+      const meta = {
+        studioUserId: req.user.id,
+        clientId: client.id,
+        clientUserId: client.userId,
+        totalChunks: total,
+        fileName: (fileName || 'file').replace(/[^a-zA-Z0-9._-]/g, '_'),
+        fileSize: parseInt(fileSize, 10) || 0,
+        mimeType: mimeType || 'application/octet-stream',
+        userPlanId: userPlanId != null && userPlanId !== '' ? String(userPlanId) : null,
+        folderId: folderId != null && folderId !== '' ? String(folderId) : null,
+      };
+      fs.writeFileSync(metaPath, JSON.stringify(meta));
+    }
+    return res.json({ success: true, chunkIndex: idx, totalChunks: total });
+  } catch (err) {
+    console.error('Studio upload chunk error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+});
+
+router.post('/clients/:clientId/complete-chunked-upload', authMiddleware, studioMiddleware, [
+  body('uploadId').notEmpty().withMessage('uploadId required'),
+], async (req, res) => {
+  try {
+    if (!isS3Configured()) return res.status(503).json({ success: false, message: 'Backblaze B2 not configured' });
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) return res.status(400).json({ success: false, errors: errors.array() });
+    const { clientId } = req.params;
+    const client = await StudioClient.findOne({ where: { id: parseInt(clientId, 10), studioId: req.user.id } });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+
+    const { uploadId } = req.body;
+    const dir = getStudioChunkDir(uploadId);
+    const metaPath = getStudioChunkMetaPath(uploadId);
+    if (!fs.existsSync(dir) || !fs.existsSync(metaPath)) {
+      return res.status(404).json({ success: false, message: 'Chunk upload not found or incomplete' });
+    }
+    const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+    if (meta.studioUserId !== req.user.id || meta.clientId !== client.id) {
+      return res.status(403).json({ success: false, message: 'Forbidden' });
+    }
+    for (let i = 0; i < meta.totalChunks; i++) {
+      if (!fs.existsSync(path.join(dir, String(i)))) return res.status(400).json({ success: false, message: `Missing chunk ${i}` });
+    }
+
+    const quota = await validateStudioUploadEligibility({
+      clientUserId: client.userId,
+      fileSize: meta.fileSize || 0,
+      userPlanId: meta.userPlanId || null,
+    });
+    if (quota.error) return res.status(quota.error.status).json({ success: false, message: quota.error.message });
+
+    const mergePath = path.join(dir, '_merged');
+    const fd = fs.openSync(mergePath, 'w');
+    try {
+      for (let i = 0; i < meta.totalChunks; i++) {
+        const buf = fs.readFileSync(path.join(dir, String(i)));
+        fs.writeSync(fd, buf);
+      }
+    } finally {
+      fs.closeSync(fd);
+    }
+
+    const uploadMeta = await generateUploadURL(
+      meta.fileName,
+      meta.mimeType || 'application/octet-stream',
+      client.userId,
+      meta.userPlanId || null,
+      meta.folderId || null
+    );
+    try {
+      await uploadFileToS3(uploadMeta.s3Key, mergePath, meta.mimeType);
+    } catch (e) {
+      try { await deleteFile(uploadMeta.s3Key); } catch (_) { }
+      throw e;
+    }
+    const saved = await saveStudioMediaAndStorage({
+      studioUserId: req.user.id,
+      clientUserId: client.userId,
+      fileName: meta.fileName,
+      mimeType: meta.mimeType || 'application/octet-stream',
+      fileSize: meta.fileSize || 0,
+      userPlanId: meta.userPlanId || null,
+      folderId: meta.folderId || null,
+      s3Key: uploadMeta.s3Key,
+      url: uploadMeta.url,
+    });
+    if (saved.error) {
+      try { await deleteFile(uploadMeta.s3Key); } catch (_) { }
+      return res.status(saved.error.status).json({ success: false, message: saved.error.message });
+    }
+
+    try {
+      fs.unlinkSync(mergePath);
+      fs.readdirSync(dir).forEach((f) => { try { fs.unlinkSync(path.join(dir, f)); } catch (_) { } });
+      fs.rmdirSync(dir);
+    } catch (_) { }
+    res.json({ success: true, media: saved.media, planStorage: saved.planStorage });
+  } catch (err) {
+    console.error('Studio complete chunked upload error:', err);
+    res.status(500).json({ success: false, message: err.message || 'Server error' });
+  }
+});
+
+router.post('/clients/:clientId/abort-chunked-upload', authMiddleware, studioMiddleware, [
+  body('uploadId').notEmpty().withMessage('uploadId required'),
+], async (req, res) => {
+  try {
+    const { clientId } = req.params;
+    const client = await StudioClient.findOne({ where: { id: parseInt(clientId, 10), studioId: req.user.id } });
+    if (!client) return res.status(404).json({ success: false, message: 'Client not found' });
+    const { uploadId } = req.body;
+    const dir = getStudioChunkDir(uploadId);
+    const metaPath = getStudioChunkMetaPath(uploadId);
+    if (fs.existsSync(metaPath)) {
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8'));
+      if (meta.studioUserId !== req.user.id || meta.clientId !== client.id) {
+        return res.status(403).json({ success: false, message: 'Forbidden' });
+      }
+    }
+    if (fs.existsSync(dir)) {
+      fs.readdirSync(dir).forEach((f) => { try { fs.unlinkSync(path.join(dir, f)); } catch (_) { } });
+      try { fs.rmdirSync(dir); } catch (_) { }
+    }
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message || 'Server error' });
   }
 });
 
