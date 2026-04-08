@@ -4,8 +4,48 @@ const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { Share, Folder, Media, UserStoragePlan } = require('../models');
 const { authMiddleware } = require('../middleware/auth');
+const { isS3Configured, presignExistingObject } = require('../services/s3Service');
 
 const router = express.Router();
+
+/** Private B2 buckets need presigned GET URLs — anonymous share viewers have no bucket credentials. */
+const B2_VIEW_URL_TTL = parseInt(process.env.B2_VIEW_URL_TTL_SECONDS || '86400', 10);
+
+/**
+ * @param {object} m - Sequelize model instance or plain { id, name, url, s3Key, category, mimeType, size }
+ */
+async function signShareMedia(m) {
+  const row = m && (m.get ? m.get({ plain: true }) : m);
+  if (!row) return null;
+  const out = {
+    id: row.id,
+    name: row.name,
+    url: row.url,
+    category: row.category,
+    mimeType: row.mimeType,
+    size: row.size,
+  };
+  // Must verify object exists — presigning a wrong key still yields a URL that returns B2 NoSuchKey XML.
+  if (isS3Configured()) {
+    try {
+      const signed = await presignExistingObject(row, B2_VIEW_URL_TTL);
+      if (signed) {
+        out.url = signed;
+      } else {
+        const raw = row.url && String(row.url).trim();
+        out.url = raw && /^https?:\/\//i.test(raw) ? raw : '';
+      }
+    } catch (e) {
+      console.error('share presign:', e.message);
+    }
+  }
+  return out;
+}
+
+async function signShareMediaList(list) {
+  const items = Array.isArray(list) ? list : [];
+  return Promise.all(items.map((m) => signShareMedia(m)));
+}
 
 // Helper: check if folderId is the shared root or a descendant of it
 async function isFolderUnderShare(userId, sharedFolderId, folderId) {
@@ -47,7 +87,8 @@ router.get('/:token', async (req, res) => {
       });
       if (!media) return res.status(404).json({ success: false, message: 'Media not found' });
       const m = media.get ? media.get({ plain: true }) : media;
-      return res.json({ type: 'media', media: { id: m.id, name: m.name, url: m.url, category: m.category, mimeType: m.mimeType, size: m.size } });
+      const signed = await signShareMedia(m);
+      return res.json({ type: 'media', media: signed });
     }
 
     // drive share: resourceId 0 = default drive, else = UserStoragePlan id. Return root or subfolder when folderId provided.
@@ -70,13 +111,13 @@ router.get('/:token', async (req, res) => {
         const mediaList = await Media.findAll({
           where: { userId: share.userId, folderId: folder.id },
           order: [['name', 'ASC']],
-          attributes: ['id', 'name', 'url', 'category', 'mimeType', 'size'],
+          attributes: ['id', 'name', 'url', 's3Key', 'category', 'mimeType', 'size'],
         });
         return res.json({
           type: 'folder',
           folder: { id: folder.id, name: folder.name },
           subfolders: subfolders.map((f) => ({ id: f.id, name: f.name })),
-          media: mediaList.map((m) => ({ id: m.id, name: m.name, url: m.url, category: m.category, mimeType: m.mimeType, size: m.size })),
+          media: await signShareMediaList(mediaList),
         });
       }
 
@@ -88,14 +129,14 @@ router.get('/:token', async (req, res) => {
       const rootMedia = await Media.findAll({
         where: { userId: share.userId, userPlanId: drivePlanId, folderId: null },
         order: [['name', 'ASC']],
-        attributes: ['id', 'name', 'url', 'category', 'mimeType', 'size'],
+        attributes: ['id', 'name', 'url', 's3Key', 'category', 'mimeType', 'size'],
       });
       const driveName = share.resourceId === 0 ? 'Default drive' : 'Drive';
       return res.json({
         type: 'folder',
         folder: { id: null, name: driveName },
         subfolders: rootFolders.map((f) => ({ id: f.id, name: f.name })),
-        media: rootMedia.map((m) => ({ id: m.id, name: m.name, url: m.url, category: m.category, mimeType: m.mimeType, size: m.size })),
+        media: await signShareMediaList(rootMedia),
       });
     }
 
@@ -120,14 +161,14 @@ router.get('/:token', async (req, res) => {
     const mediaList = await Media.findAll({
       where: { userId: share.userId, folderId: folder.id },
       order: [['name', 'ASC']],
-      attributes: ['id', 'name', 'url', 'category', 'mimeType', 'size'],
+      attributes: ['id', 'name', 'url', 's3Key', 'category', 'mimeType', 'size'],
     });
 
     res.json({
       type: 'folder',
       folder: { id: folder.id, name: folder.name },
       subfolders: subfolders.map((f) => ({ id: f.id, name: f.name })),
-      media: mediaList.map((m) => ({ id: m.id, name: m.name, url: m.url, category: m.category, mimeType: m.mimeType, size: m.size })),
+      media: await signShareMediaList(mediaList),
     });
   } catch (error) {
     console.error('Resolve share error:', error);

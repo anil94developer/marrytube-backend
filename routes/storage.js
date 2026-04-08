@@ -2,13 +2,14 @@ const express = require('express');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
 const { fn, col } = require('sequelize');
-const { Storage, StoragePlan, Media, UserStoragePlan, Folder, User, Transaction } = require('../models');
-const { authMiddleware } = require('../middleware/auth');
+const { Storage, StoragePlan, Media, UserStoragePlan, Folder, User, Transaction, StudioClient } = require('../models');
+const { authMiddleware, studioMiddleware } = require('../middleware/auth');
+const { fulfillPurchasePlanForClient } = require('../services/studioClientPlanPurchase');
 
 const router = express.Router();
 const BYTES_PER_GB = 1024 * 1024 * 1024;
 
-// Pending Cashfree orders: order_id -> { userId, storage, period, planId, price }
+// Pending Cashfree orders: kind 'storage' (self) | 'studio_client' (studio pays for client plan)
 const pendingOrders = new Map();
 
 // Use production API when CASHFREE_ENV=PRODUCTION or when secret key looks like production (cfsk_ma_prod_*)
@@ -349,6 +350,7 @@ router.post('/create-order', authMiddleware, [
     }
 
     pendingOrders.set(orderId, {
+      kind: 'storage',
       userId,
       storage: parseFloat(storage),
       period: period || 'month',
@@ -386,6 +388,153 @@ router.post('/create-order', authMiddleware, [
   }
 });
 
+// Studio pays cashfree for a client's storage plan (same fulfillment as /studio/clients/:id/purchase-plan)
+router.post('/create-studio-client-order', authMiddleware, studioMiddleware, [
+  body('clientId').isInt().withMessage('clientId is required'),
+  body('planId').notEmpty().withMessage('Plan ID is required'),
+  body('storage').optional().isNumeric().withMessage('Storage must be numeric for per_gb plans'),
+  body('period').optional().isIn(['month', 'year']).withMessage('Period must be month or year'),
+  body('returnUrl').optional().isString().trim().withMessage('returnUrl must be a string'),
+], async (req, res) => {
+  try {
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      return res.status(400).json({ success: false, errors: errors.array() });
+    }
+    if (!process.env.CASHFREE_CLIENT_ID || !process.env.CASHFREE_SECRET_KEY) {
+      return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
+    }
+
+    const studioId = req.user.id;
+    const { clientId, planId, storage: requestedStorage, period: periodFromBody, returnUrl } = req.body;
+
+    const client = await StudioClient.findOne({
+      where: { id: parseInt(clientId, 10), studioId },
+    });
+    if (!client) {
+      return res.status(404).json({ success: false, message: 'Client not found' });
+    }
+
+    const plan = await StoragePlan.findByPk(parseInt(planId, 10));
+    if (!plan || !plan.isActive) {
+      return res.status(404).json({ success: false, message: 'Plan not found' });
+    }
+
+    if (periodFromBody && periodFromBody !== plan.period) {
+      return res.status(400).json({ success: false, message: 'Period does not match selected plan' });
+    }
+
+    let orderAmount;
+    let requestedStorageForFulfill = null;
+    if (plan.category === 'fixed') {
+      orderAmount = parseFloat(plan.price);
+    } else if (plan.category === 'per_gb') {
+      if (requestedStorage == null || Number.isNaN(parseFloat(requestedStorage))) {
+        return res.status(400).json({ success: false, message: 'Storage amount required for per_gb plans' });
+      }
+      const gb = parseFloat(requestedStorage);
+      if (gb < 1) {
+        return res.status(400).json({ success: false, message: 'Select at least 1 GB' });
+      }
+      requestedStorageForFulfill = gb;
+      orderAmount = gb * parseFloat(plan.price);
+    } else {
+      return res.status(400).json({ success: false, message: 'Unsupported plan category' });
+    }
+
+    const periodType = plan.period === 'year' ? 'year' : 'month';
+    const user = await User.findByPk(studioId);
+    if (!user) return res.status(401).json({ success: false, message: 'User not found' });
+
+    const orderId = `marry_sc_${studioId}_${clientId}_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+    const orderAmountStr = parseFloat(orderAmount).toFixed(2);
+    const frontendOrigin = process.env.FRONTEND_URL || 'http://localhost:3000';
+    let returnUrlFinal = returnUrl || `${frontendOrigin}/studio/clients/${clientId}?order_id=${orderId}&payment=success`;
+    const isLocalhost = /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?\//i.test(returnUrlFinal) || returnUrlFinal.includes('localhost') || returnUrlFinal.includes('127.0.0.1');
+    if (!isLocalhost && returnUrlFinal.startsWith('http://')) {
+      returnUrlFinal = returnUrlFinal.replace(/^http:\/\//, 'https://');
+    }
+
+    const payload = {
+      order_id: orderId,
+      order_amount: parseFloat(orderAmountStr),
+      order_currency: 'INR',
+      customer_details: {
+        customer_id: `studio_${studioId}`,
+        customer_name: (user.name || 'Studio').slice(0, 100),
+        customer_email: user.email || `studio${studioId}@marrytube.local`,
+        customer_phone: (user.mobile || user.alternatePhone || '9999999999').replace(/\D/g, '').slice(-10) || '9999999999',
+      },
+      order_meta: {
+        return_url: returnUrlFinal,
+        notify_url: process.env.CASHFREE_WEBHOOK_URL || undefined,
+      },
+    };
+
+    let cfRes;
+    try {
+      cfRes = await fetch(`${getCashfreeBase()}/orders`, {
+        method: 'POST',
+        headers: CASHFREE_HEADERS(),
+        body: JSON.stringify(payload),
+      });
+    } catch (fetchErr) {
+      console.error('Cashfree create studio-client order error:', fetchErr);
+      return res.status(503).json({
+        success: false,
+        message: 'Cannot reach payment gateway. Check network or Cashfree configuration.',
+      });
+    }
+    const data = await cfRes.json();
+    if (!cfRes.ok || !data.payment_session_id) {
+      console.error('Cashfree create studio-client order error:', data);
+      let msg = data.message || data.error?.message || 'Failed to create payment order';
+      return res.status(400).json({ success: false, message: msg });
+    }
+
+    const storageGbForTx = plan.category === 'fixed' ? parseFloat(plan.storage) : (requestedStorageForFulfill || 0);
+
+    pendingOrders.set(orderId, {
+      kind: 'studio_client',
+      studioUserId: studioId,
+      clientId: client.id,
+      clientUserId: client.userId,
+      planId: plan.id,
+      requestedStorage: requestedStorageForFulfill,
+      period: periodType,
+      price: parseFloat(orderAmountStr),
+    });
+
+    try {
+      await Transaction.create({
+        userId: studioId,
+        orderId: data.order_id || orderId,
+        amount: parseFloat(orderAmountStr),
+        currency: 'INR',
+        storage: storageGbForTx,
+        period: periodType,
+        planId: plan.id,
+        status: 'pending',
+        paymentGateway: 'cashfree',
+        description: `Client plan (client #${clientId})`,
+      });
+    } catch (txErr) {
+      console.error('Transaction create (studio client pending) error:', txErr.message);
+    }
+
+    res.json({
+      success: true,
+      orderId: data.order_id || orderId,
+      paymentSessionId: data.payment_session_id,
+      returnUrl: returnUrlFinal,
+      cashfreeMode: getCashfreeMode(),
+    });
+  } catch (error) {
+    console.error('Create studio-client order error:', error);
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
+  }
+});
+
 // Called after successful Cashfree payment — fulfills storage purchase
 router.post('/payment-success', authMiddleware, [
   body('order_id').notEmpty().withMessage('Order ID is required'),
@@ -402,6 +551,42 @@ router.post('/payment-success', authMiddleware, [
     if (!pending) {
       return res.status(404).json({ success: false, message: 'Order not found or already fulfilled' });
     }
+
+    const kind = pending.kind || 'storage';
+
+    if (kind === 'studio_client') {
+      if (pending.studioUserId !== userId) {
+        return res.status(403).json({ success: false, message: 'Order does not belong to you' });
+      }
+      try {
+        await fulfillPurchasePlanForClient({
+          clientUserId: pending.clientUserId,
+          planId: pending.planId,
+          requestedStorage: pending.requestedStorage,
+          period: pending.period,
+          studioId: pending.studioUserId,
+        });
+      } catch (fulfillErr) {
+        console.error('Studio client plan fulfill error:', fulfillErr);
+        return res.status(500).json({ success: false, message: fulfillErr.message || 'Fulfillment failed' });
+      }
+      pendingOrders.delete(order_id);
+
+      try {
+        const tx = await Transaction.findOne({ where: { orderId: order_id, userId } });
+        if (tx) await tx.update({ status: 'success' });
+      } catch (txErr) {
+        console.error('Transaction update (success) error:', txErr.message);
+      }
+
+      return res.json({
+        success: true,
+        message: 'Plan activated for your client',
+        kind: 'studio_client',
+        clientId: pending.clientId,
+      });
+    }
+
     if (pending.userId !== userId) {
       return res.status(403).json({ success: false, message: 'Order does not belong to you' });
     }

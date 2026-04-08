@@ -7,7 +7,16 @@ const path = require('path');
 const fs = require('fs');
 const { Media, Folder, Storage, UserStoragePlan } = require('../models');
 const { authMiddleware } = require('../middleware/auth');
-const { generateUploadURL, generateDownloadURL, deleteFile, uploadFileToS3, uploadBufferToS3, isS3Configured, getBackblazeStatus } = require('../services/s3Service');
+const {
+  generateUploadURL,
+  deleteFile,
+  uploadFileToS3,
+  uploadBufferToS3,
+  isS3Configured,
+  getBackblazeStatus,
+  presignExistingObject,
+} = require('../services/s3Service');
+const { getDescendantFolderIds, deleteMediaRecordAndFiles, deleteFolderCascadeForUser } = require('../services/folderDeleteService');
 
 const router = express.Router();
 
@@ -92,25 +101,83 @@ router.get('/list', async (req, res) => {
       }
     }
 
+    if (req.query.search && String(req.query.search).trim()) {
+      where.name = { [Op.like]: `%${String(req.query.search).trim()}%` };
+    }
+    const now = new Date();
+    if (req.query.datePreset === 'today') {
+      const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      where.uploadDate = { [Op.gte]: start };
+    } else if (req.query.datePreset === 'week') {
+      const start = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+      where.uploadDate = { [Op.gte]: start };
+    } else if (req.query.datePreset === 'month') {
+      const start = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+      where.uploadDate = { [Op.gte]: start };
+    }
+
+    const sortDir = (req.query.sort === 'asc' || req.query.sortOrder === 'asc') ? 'ASC' : 'DESC';
+    const page = parseInt(req.query.page, 10);
+    const usePaging = !Number.isNaN(page) && page >= 1;
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit, 10) || 50));
+
+    const include = [{
+      model: Folder,
+      as: 'folder',
+      attributes: ['id', 'name'],
+      required: false,
+    }];
+
+    if (usePaging) {
+      const offset = (page - 1) * limit;
+      const planCountWhere = { userId };
+      if (userPlanId === 'default' || userPlanId === '' || userPlanId == null) {
+        planCountWhere.userPlanId = null;
+      } else if (userPlanId) {
+        const pid = parseInt(userPlanId, 10);
+        if (!Number.isNaN(pid)) planCountWhere.userPlanId = pid;
+      }
+      const totalOnPlan = await Media.count({ where: planCountWhere });
+      const total = await Media.count({ where });
+      const media = await Media.findAll({
+        where,
+        limit,
+        offset,
+        order: [['uploadDate', sortDir]],
+        include,
+      });
+      const list = media.map((m) => m.get ? m.get({ plain: true }) : m);
+      if (isS3Configured()) {
+        await Promise.all(list.map(async (item) => {
+          try {
+            const signed = await presignExistingObject(item, 3600);
+            if (signed) item.url = signed;
+          } catch (_) { /* keep stored url */ }
+        }));
+      }
+      return res.json({
+        data: list,
+        total,
+        totalOnPlan,
+        page,
+        limit,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      });
+    }
+
     const media = await Media.findAll({
       where,
-      order: [['uploadDate', 'DESC']],
-      include: [{
-        model: Folder,
-        as: 'folder',
-        attributes: ['id', 'name'],
-        required: false,
-      }],
+      order: [['uploadDate', sortDir]],
+      include,
     });
 
     const list = media.map((m) => m.get ? m.get({ plain: true }) : m);
     if (isS3Configured()) {
       await Promise.all(list.map(async (item) => {
-        if (item.s3Key) {
-          try {
-            item.url = await generateDownloadURL(item.s3Key, 3600);
-          } catch (_) { }
-        }
+        try {
+          const signed = await presignExistingObject(item, 3600);
+          if (signed) item.url = signed;
+        } catch (_) { /* keep stored url */ }
       }));
     }
     res.json(list);
@@ -396,9 +463,10 @@ router.get('/:mediaId', async (req, res) => {
     }
 
     const out = media.get ? media.get({ plain: true }) : media;
-    if (isS3Configured() && out.s3Key) {
+    if (isS3Configured()) {
       try {
-        out.url = await generateDownloadURL(out.s3Key, 3600);
+        const signed = await presignExistingObject(out, 3600);
+        if (signed) out.url = signed;
       } catch (_) { }
     }
     res.json(out);
@@ -795,41 +863,7 @@ router.delete('/:mediaId', async (req, res) => {
       return res.status(404).json({ success: false, message: 'Media not found' });
     }
 
-    // Delete file: local disk if url starts with /upload/, else Backblaze B2
-    try {
-      if (media.url && media.url.startsWith('/upload/')) {
-        const filePath = path.join(__dirname, '..', media.url);
-        if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-      } else {
-        await deleteFile(media.s3Key);
-      }
-    } catch (delError) {
-      console.error('File delete error:', delError);
-      // Continue even if delete fails
-    }
-
-    // Update storage usage (user-level Storage model)
-    const sizeInGB = media.size / (1024 * 1024 * 1024);
-    const storage = await Storage.findOne({ where: { userId } });
-    if (storage) {
-      const newUsedStorage = Math.max(0, parseFloat(storage.usedStorage) - sizeInGB);
-      await storage.update({
-        usedStorage: newUsedStorage,
-        availableStorage: parseFloat(storage.totalStorage) - newUsedStorage,
-      });
-    }
-
-    // If media belonged to a plan, subtract from UserStoragePlan.usedStorage (bytes)
-    if (media.userPlanId) {
-      const plan = await UserStoragePlan.findByPk(media.userPlanId);
-      if (plan) {
-        plan.usedStorage = Math.max(0, (Number(plan.usedStorage) || 0) - media.size);
-        await plan.save();
-      }
-    }
-
-    // Delete media record
-    await media.destroy();
+    await deleteMediaRecordAndFiles(media, userId);
 
     res.json({ success: true });
   } catch (error) {
@@ -973,44 +1007,33 @@ router.patch('/folders/:folderId', [
   }
 });
 
-// Delete folder (reparent subfolders and media to this folder's parent, then delete)
+// Delete folder: cascade — all nested subfolders + all media (files on disk/B2, DB, storage)
 router.delete('/folders/:folderId', async (req, res) => {
   try {
     const { folderId } = req.params;
     const userId = req.user.id;
     const folderIdNum = parseInt(folderId, 10);
+    if (Number.isNaN(folderIdNum)) {
+      return res.status(400).json({ success: false, message: 'Invalid folder id' });
+    }
+
     const folder = await Folder.findOne({ where: { id: folderIdNum, userId } });
     if (!folder) {
       return res.status(404).json({ success: false, message: 'Folder not found' });
     }
-    const newParentId = folder.parentFolderId;
 
-    await Folder.update(
-      { parentFolderId: newParentId },
-      { where: { parentFolderId: folderIdNum, userId } }
-    );
-    await Media.update(
-      { folderId: newParentId },
-      { where: { folderId: folderIdNum, userId } }
-    );
+    const stats = await deleteFolderCascadeForUser(userId, folderIdNum);
 
-    await folder.destroy();
-    res.json({ success: true });
+    res.json({
+      success: true,
+      deletedFolders: stats.deletedFolders,
+      deletedMedia: stats.deletedMedia,
+    });
   } catch (error) {
     console.error('Delete folder error:', error);
-    res.status(500).json({ success: false, message: 'Server error' });
+    res.status(500).json({ success: false, message: error.message || 'Server error' });
   }
 });
-
-// Helper: collect all descendant folder ids (recursive)
-async function getDescendantFolderIds(userId, folderId, result = new Set()) {
-  const children = await Folder.findAll({ where: { userId, parentFolderId: folderId }, attributes: ['id'] });
-  for (const c of children) {
-    result.add(c.id);
-    await getDescendantFolderIds(userId, c.id, result);
-  }
-  return result;
-}
 
 // Move folder (and all its media) to another drive. Optional toFolderId = parent folder on destination drive.
 router.post('/folders/:folderId/move-to-drive', [
