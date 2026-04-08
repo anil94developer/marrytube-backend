@@ -121,13 +121,17 @@ router.get('/user', authMiddleware, async (req, res) => {
     let storage = await Storage.findOne({ where: { userId } });
 
     if (!storage) {
-      // Create default storage (0 GB — no free storage for new users)
+      // Create default storage (1 GB free for new users)
       storage = await Storage.create({
         userId,
-        totalStorage: 0,
+        totalStorage: 1,
         usedStorage: 0,
-        availableStorage: 0,
+        availableStorage: 1,
       });
+    } else if (parseFloat(storage.totalStorage) === 0 && parseFloat(storage.usedStorage) === 0) {
+      await storage.update({ totalStorage: 1, availableStorage: 1 });
+      storage.totalStorage = 1;
+      storage.availableStorage = 1;
     }
 
     res.json(storage);

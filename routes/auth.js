@@ -1,7 +1,7 @@
 const express = require('express');
 const jwt = require('jsonwebtoken');
 const { body, validationResult } = require('express-validator');
-const { User } = require('../models');
+const { User, Storage } = require('../models');
 const { createAndSendOTP, verifyOTP } = require('../services/otpService');
 const { authMiddleware } = require('../middleware/auth');
 
@@ -74,6 +74,12 @@ router.post('/verify-otp', [
           email: identifier,
           userType,
         });
+        if (userType === 'customer') {
+          await Storage.findOrCreate({
+            where: { userId: user.id },
+            defaults: { userId: user.id, totalStorage: 1, usedStorage: 0, availableStorage: 1 },
+          });
+        }
         isNewUser = true;
       }
     } else {
@@ -83,6 +89,12 @@ router.post('/verify-otp', [
           mobile: identifier,
           userType,
         });
+        if (userType === 'customer') {
+          await Storage.findOrCreate({
+            where: { userId: user.id },
+            defaults: { userId: user.id, totalStorage: 1, usedStorage: 0, availableStorage: 1 },
+          });
+        }
         isNewUser = true;
       }
     }
