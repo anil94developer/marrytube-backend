@@ -6,10 +6,10 @@
 
 module.exports = {
   // MySQL Database Configuration
-  DB_NAME: 'u214419219_matkafun',
-  DB_USER: 'u214419219_matkafun',  // Username only - NO @host part
+  DB_NAME: 'a1774c4c_marrytube',
+  DB_USER: 'a1774c4c_root',  // Username only - NO @host part
   DB_PASSWORD: 'Marrytube@123!',
-  DB_HOST: '145.79.209.227',      // MySQL server host
+  DB_HOST: '162.241.27.190',      // MySQL server host
   DB_PORT: 3306,
   
   // Note: MySQL user host restriction (like @localhost or @%) 

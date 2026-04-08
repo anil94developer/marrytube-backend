@@ -27,7 +27,13 @@ router.post('/send-otp', [
     const result = await createAndSendOTP(identifier, type);
 
     if (result.success) {
-      res.json({ success: true, message: 'OTP sent successfully' });
+      const payload = { success: true, message: result.message || 'OTP sent successfully' };
+      if (result.devOtp && process.env.NODE_ENV !== 'production') {
+        payload.devOtp = result.devOtp;
+        payload.deliveryFailed = !!result.deliveryFailed;
+        if (result.deliveryError) payload.deliveryError = result.deliveryError;
+      }
+      res.json(payload);
     } else {
       res.status(400).json(result);
     }

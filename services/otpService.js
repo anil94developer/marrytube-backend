@@ -13,6 +13,9 @@ if (process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN) {
 // Initialize email transporter (supports EMAIL_PASS or EMAIL_PASSWORD)
 const emailUser = process.env.EMAIL_USER ? String(process.env.EMAIL_USER).replace(/^["']|["']$/g, '').trim() : '';
 const emailPass = process.env.EMAIL_PASS || process.env.EMAIL_PASSWORD;
+const defaultFromEmail = process.env.EMAIL_FROM || 'no-reply@marrytube.com';
+const fromAddress = `"MarryTube" <${defaultFromEmail}>`;
+const allowDevOtpFallback = String(process.env.OTP_DEV_FALLBACK || '').toLowerCase() === 'true';
 const getDefaultSmtpHost = (user) => {
   if (!user || !user.includes('@')) return 'smtp.gmail.com';
   const domain = user.split('@')[1];
@@ -83,30 +86,42 @@ const getOTPEmailHtml = (otp, expiryMinutes = 10) => {
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Your MarryTube Login Code</title>
 </head>
-<body style="margin:0; padding:0; background-color:#f4f4f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
-  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color:#f4f4f5; padding: 40px 20px;">
+<body style="margin:0; padding:0; background:#f6f7fb; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f6f7fb; padding: 36px 16px;">
     <tr>
       <td align="center">
-        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 480px; background-color:#ffffff; border-radius: 16px; box-shadow: 0 4px 24px rgba(0,0,0,0.08); overflow: hidden;">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width: 520px; background:#ffffff; border:1px solid #e8eaf3; border-radius: 16px; box-shadow: 0 8px 28px rgba(16,24,40,0.08); overflow: hidden;">
           <tr>
-            <td style="background: linear-gradient(135deg, #6366f1 0%, #8b5cf6 100%); padding: 32px 32px 24px; text-align: center;">
-              <h1 style="margin:0; color:#ffffff; font-size: 24px; font-weight: 700; letter-spacing: -0.5px;">MarryTube</h1>
-              <p style="margin: 8px 0 0; color: rgba(255,255,255,0.9); font-size: 14px;">Your login verification code</p>
+            <td style="background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%); padding: 28px 30px; text-align: left;">
+              <p style="margin:0; color:#e0e7ff; font-size:12px; letter-spacing:1px; text-transform:uppercase;">MarryTube Security</p>
+              <h1 style="margin:6px 0 0; color:#ffffff; font-size:22px; font-weight:700;">Your one-time passcode</h1>
             </td>
           </tr>
           <tr>
-            <td style="padding: 32px 32px 24px;">
-              <p style="margin:0 0 16px; color:#374151; font-size: 15px; line-height: 1.5;">Use this one-time code to sign in:</p>
-              <div style="background: linear-gradient(135deg, #f0f0ff 0%, #f5f3ff 100%); border: 2px dashed #8b5cf6; border-radius: 12px; padding: 20px; text-align: center; margin: 20px 0;">
-                <span style="font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #4f46e5; font-family: 'Courier New', monospace;">${otp}</span>
+            <td style="padding: 30px;">
+              <p style="margin:0 0 10px; color:#111827; font-size:15px; line-height:1.6;">
+                We received a sign-in request for your MarryTube account.
+              </p>
+              <p style="margin:0; color:#4b5563; font-size:14px; line-height:1.6;">
+                Enter this OTP to continue:
+              </p>
+              <div style="background:#f5f3ff; border:1px solid #ddd6fe; border-radius:12px; padding:18px; text-align:center; margin:18px 0;">
+                <span style="display:inline-block; font-size:34px; font-weight:700; letter-spacing:7px; color:#4f46e5; font-family:'Courier New', monospace;">${otp}</span>
               </div>
-              <p style="margin: 0 0 8px; color:#6b7280; font-size: 13px;">Valid for <strong>${expiryMinutes} minutes</strong>. Do not share this code with anyone.</p>
-              <p style="margin: 24px 0 0; color:#9ca3af; font-size: 12px; line-height: 1.5;">If you didn't request this code, you can safely ignore this email. Your account is secure.</p>
+              <p style="margin:0; color:#374151; font-size:13px; line-height:1.6;">
+                This code expires in <strong>${expiryMinutes} minutes</strong>. Never share it with anyone.
+              </p>
+              <p style="margin:16px 0 0; color:#6b7280; font-size:12px; line-height:1.6;">
+                If you did not request this OTP, you can safely ignore this email.
+              </p>
             </td>
           </tr>
           <tr>
-            <td style="padding: 16px 32px 24px; border-top: 1px solid #e5e7eb; text-align: center;">
-              <p style="margin:0; color:#9ca3af; font-size: 11px;">© ${year} MarryTube. All rights reserved.</p>
+            <td style="padding: 14px 30px 22px; border-top:1px solid #eef0f6;">
+              <p style="margin:0; color:#9ca3af; font-size:11px; line-height:1.6;">
+                Sent from <a href="mailto:no-reply@marrytube.com" style="color:#6b7280; text-decoration:none;">no-reply@marrytube.com</a>
+              </p>
+              <p style="margin:4px 0 0; color:#9ca3af; font-size:11px;">© ${year} MarryTube. All rights reserved.</p>
             </td>
           </tr>
         </table>
@@ -128,13 +143,31 @@ const sendEmailOTP = async (email, otp) => {
   const expiryMinutes = parseInt(process.env.OTP_EXPIRY_MINUTES || '10', 10);
 
   try {
-    await emailTransporter.sendMail({
-      from: `"MarryTube" <${emailUser}>`,
+    const info = await emailTransporter.sendMail({
+      from: fromAddress,
+      replyTo: process.env.EMAIL_REPLY_TO || defaultFromEmail,
       to: email,
-      subject: `${otp} is your MarryTube login code`,
+      subject: `${otp} is your MarryTube OTP`,
       html: getOTPEmailHtml(otp, expiryMinutes),
-      text: `Your MarryTube login code is: ${otp}. Valid for ${expiryMinutes} minutes. Do not share this code.`,
+      text: `MarryTube OTP: ${otp}\nThis code is valid for ${expiryMinutes} minutes.\nDo not share this code with anyone.\nIf you did not request this OTP, ignore this email.\n\n- MarryTube Team\nno-reply@marrytube.com`,
     });
+
+    const accepted = Array.isArray(info.accepted) ? info.accepted : [];
+    const rejected = Array.isArray(info.rejected) ? info.rejected : [];
+    console.log('OTP email send result:', {
+      to: email,
+      messageId: info.messageId,
+      accepted,
+      rejected,
+      response: info.response,
+    });
+
+    if (!accepted.length || rejected.length) {
+      return {
+        success: false,
+        message: 'Email was not accepted by SMTP for this recipient. Please verify mailbox/domain settings.',
+      };
+    }
     return { success: true, message: 'OTP sent successfully' };
   } catch (error) {
     console.error('Email sending error:', error);
@@ -161,13 +194,21 @@ const sendHtmlEmail = async ({ to, subject, html, text, bcc }) => {
     return { success: false, message: 'Email not configured. Set EMAIL_USER and EMAIL_PASS in .env.' };
   }
   try {
-    await emailTransporter.sendMail({
-      from: `"MarryTube" <${emailUser}>`,
+    const info = await emailTransporter.sendMail({
+      from: fromAddress,
+      replyTo: process.env.EMAIL_REPLY_TO || defaultFromEmail,
       to,
       bcc: bcc || undefined,
       subject,
       html,
       text: text || html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim(),
+    });
+    console.log('HTML email send result:', {
+      to,
+      messageId: info.messageId,
+      accepted: info.accepted,
+      rejected: info.rejected,
+      response: info.response,
     });
     return { success: true, message: 'Email sent' };
   } catch (error) {
@@ -201,6 +242,17 @@ const createAndSendOTP = async (identifier, type) => {
       sendResult = await sendSMSOTP(identifier, otp);
     } else {
       sendResult = await sendEmailOTP(identifier, otp);
+    }
+
+    // Optional dev fallback: enable only when OTP_DEV_FALLBACK=true.
+    if (!sendResult.success && process.env.NODE_ENV !== 'production' && allowDevOtpFallback) {
+      return {
+        success: true,
+        message: 'OTP generated in development mode (delivery failed, using fallback).',
+        devOtp: otp,
+        deliveryFailed: true,
+        deliveryError: sendResult.message,
+      };
     }
 
     return sendResult;
