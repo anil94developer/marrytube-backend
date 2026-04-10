@@ -639,6 +639,7 @@ router.get('/clients/:clientId/plans', async (req, res) => {
     const plansWithUsed = userPlans.map((plan) => {
       const planData = plan.get ? plan.get({ plain: true }) : plan;
       planData.usedStorage = usedMap[plan.id] != null ? usedMap[plan.id] : (plan.usedStorage || 0);
+      planData.catalogPlanId = planData.planId != null ? planData.planId : null;
       return planData;
     });
 
@@ -1372,6 +1373,10 @@ router.post('/clients/:clientId/purchase-plan', [
   body('planId').notEmpty().withMessage('Plan ID is required'),
   body('storage').optional().isNumeric().withMessage('Storage must be numeric for per_gb plans'),
   body('period').optional().isIn(['month', 'year']).withMessage('Period must be month or year'),
+  body('isRenew').optional({ nullable: true }).custom((v) => {
+    if (v === undefined || v === null || v === '') return true;
+    return [true, false, 'true', 'false', 1, 0, '1', '0'].includes(v);
+  }).withMessage('isRenew must be boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -1381,7 +1386,7 @@ router.post('/clients/:clientId/purchase-plan', [
 
     const { clientId } = req.params;
     const studioId = req.user.id;
-    const { planId, storage: requestedStorage, period } = req.body;
+    const { planId, storage: requestedStorage, period, isRenew = false } = req.body;
 
     // Verify client belongs to studio
     const client = await StudioClient.findOne({ where: { id: parseInt(clientId), studioId } });
@@ -1394,6 +1399,7 @@ router.post('/clients/:clientId/purchase-plan', [
         planId,
         requestedStorage,
         period: periodType,
+        isRenew,
         studioId,
       });
       return res.json({ success: true, plan, userPlan, added });

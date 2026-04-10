@@ -145,6 +145,7 @@ router.get('/user', authMiddleware, async (req, res) => {
 router.get('/my-plans', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
+    const includeDefault = ['1', 'true', 'yes'].includes(String(req.query.includeDefault || '').toLowerCase());
     const userPlans = await UserStoragePlan.findAll({
       where: { userId },
       order: [['expiryDate', 'DESC'], ['id', 'ASC']],
@@ -169,7 +170,20 @@ router.get('/my-plans', authMiddleware, async (req, res) => {
     });
 
     if (plansWithUsed.length > 0) {
-      return res.json(plansWithUsed);
+      // Explicit catalog FK so clients never confuse with user_storage_plans.id
+      const mapped = plansWithUsed.map((row) => {
+        const o = row && typeof row === 'object' ? { ...row } : row;
+        if (o && typeof o === 'object') {
+          o.catalogPlanId = o.planId != null ? o.planId : null;
+        }
+        return o;
+      });
+      return res.json(mapped);
+    }
+
+    if (!includeDefault) {
+      // Purchased plans only mode: hide default free drive from this endpoint.
+      return res.json([]);
     }
 
     // No UserStoragePlan: return one "default" drive with 1 GB free so upload works without purchase
@@ -221,30 +235,45 @@ function addPeriodToDate(purchaseDate, period) {
   return d;
 }
 
+/** Coerce renew flag from JSON (clients sometimes send string "true"). */
+function toBoolRenew(v) {
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+
 // Fulfill storage purchase (shared by /purchase and payment-success)
-async function fulfillStoragePurchase(userId, storage, period, planId) {
+async function fulfillStoragePurchase(userId, storage, period, planId, isRenew = false) {
+  const renew = toBoolRenew(isRenew);
   const storageNum = parseFloat(storage);
+  let storageDelta = storageNum;
   if (planId != null && planId !== '' && !Number.isNaN(parseInt(planId, 10))) {
     const plan = await StoragePlan.findByPk(parseInt(planId, 10));
     if (plan) {
       let storageToAdd = storageNum;
       if (plan.category === 'fixed') storageToAdd = parseFloat(plan.storage);
+      storageDelta = storageToAdd;
 
       const purchaseDate = new Date();
       const periodType = period === 'year' ? 'year' : 'month';
-      let userPlan = await UserStoragePlan.findOne({
-        where: { userId, planId: plan.id, status: 'active', expiryDate: { [Op.gt]: purchaseDate } },
-      });
+      let userPlan = null;
+      if (renew) {
+        // Latest row for this catalog plan (any status) — avoids "renew" creating a 2nd row + double GB.
+        userPlan = await UserStoragePlan.findOne({
+          where: { userId, planId: plan.id },
+          order: [['expiryDate', 'DESC'], ['id', 'DESC']],
+        });
+      }
 
       let expiryDate;
       if (userPlan) {
+        // Renew (same plan row): ONLY extend expiry — never increase plan GB or aggregate storage.
+        // New GB only when a new UserStoragePlan row is created below (new purchase / add-on).
         const baseDate = userPlan.expiryDate > purchaseDate ? new Date(userPlan.expiryDate) : purchaseDate;
         expiryDate = addPeriodToDate(baseDate, periodType);
-        userPlan.totalStorage += storageToAdd;
-        userPlan.availableStorage += storageToAdd;
         userPlan.expiryDate = expiryDate;
+        if (userPlan.status !== 'active') userPlan.status = 'active';
         await userPlan.save();
-      } else {
+        storageDelta = 0;
+      } else if (!renew) {
         expiryDate = addPeriodToDate(purchaseDate, periodType);
         await UserStoragePlan.create({
           userId,
@@ -255,6 +284,11 @@ async function fulfillStoragePurchase(userId, storage, period, planId) {
           expiryDate,
           status: 'active',
         });
+        // storageDelta stays storageToAdd → aggregate storage increases once
+      } else {
+        // renew=true but no row found — do not create duplicate or add GB (prevents 1GB → 2GB bug)
+        console.warn('Renew requested but no UserStoragePlan row for user/plan', { userId, planId: plan.id });
+        storageDelta = 0;
       }
     }
   }
@@ -268,10 +302,10 @@ async function fulfillStoragePurchase(userId, storage, period, planId) {
       availableStorage: 0,
     });
   }
-  const newTotalStorage = parseFloat(userStorage.totalStorage) + storageNum;
+  const newTotalStorage = parseFloat(userStorage.totalStorage) + storageDelta;
   await userStorage.update({
-    totalStorage: newTotalStorage,
-    availableStorage: newTotalStorage - parseFloat(userStorage.usedStorage),
+    totalStorage: Math.max(0, newTotalStorage),
+    availableStorage: Math.max(0, newTotalStorage - parseFloat(userStorage.usedStorage)),
   });
   return userStorage;
 }
@@ -282,6 +316,10 @@ router.post('/create-order', authMiddleware, [
   body('period').isIn(['month', 'year']).withMessage('Period must be month or year'),
   body('price').isNumeric().withMessage('Price is required'),
   body('planId').optional(),
+  body('isRenew').optional({ nullable: true }).custom((v) => {
+    if (v === undefined || v === null || v === '') return true;
+    return [true, false, 'true', 'false', 1, 0, '1', '0'].includes(v);
+  }).withMessage('isRenew must be boolean'),
   body('returnUrl').optional().isString().trim().withMessage('returnUrl must be a string'),
 ], async (req, res) => {
   try {
@@ -293,7 +331,7 @@ router.post('/create-order', authMiddleware, [
       return res.status(503).json({ success: false, message: 'Payment gateway not configured' });
     }
 
-    const { storage, period, price, planId, returnUrl } = req.body;
+    const { storage, period, price, planId, isRenew = false, returnUrl } = req.body;
     const userId = req.user.id;
     const user = await User.findByPk(userId);
     if (!user) return res.status(401).json({ success: false, message: 'User not found' });
@@ -359,6 +397,7 @@ router.post('/create-order', authMiddleware, [
       storage: parseFloat(storage),
       period: period || 'month',
       planId: planId != null && planId !== '' ? planId : null,
+      isRenew: toBoolRenew(isRenew),
       price: parseFloat(price),
     });
 
@@ -398,6 +437,10 @@ router.post('/create-studio-client-order', authMiddleware, studioMiddleware, [
   body('planId').notEmpty().withMessage('Plan ID is required'),
   body('storage').optional().isNumeric().withMessage('Storage must be numeric for per_gb plans'),
   body('period').optional().isIn(['month', 'year']).withMessage('Period must be month or year'),
+  body('isRenew').optional({ nullable: true }).custom((v) => {
+    if (v === undefined || v === null || v === '') return true;
+    return [true, false, 'true', 'false', 1, 0, '1', '0'].includes(v);
+  }).withMessage('isRenew must be boolean'),
   body('returnUrl').optional().isString().trim().withMessage('returnUrl must be a string'),
 ], async (req, res) => {
   try {
@@ -410,7 +453,7 @@ router.post('/create-studio-client-order', authMiddleware, studioMiddleware, [
     }
 
     const studioId = req.user.id;
-    const { clientId, planId, storage: requestedStorage, period: periodFromBody, returnUrl } = req.body;
+    const { clientId, planId, storage: requestedStorage, period: periodFromBody, isRenew = false, returnUrl } = req.body;
 
     const client = await StudioClient.findOne({
       where: { id: parseInt(clientId, 10), studioId },
@@ -506,6 +549,7 @@ router.post('/create-studio-client-order', authMiddleware, studioMiddleware, [
       planId: plan.id,
       requestedStorage: requestedStorageForFulfill,
       period: periodType,
+      isRenew: toBoolRenew(isRenew),
       price: parseFloat(orderAmountStr),
     });
 
@@ -568,6 +612,7 @@ router.post('/payment-success', authMiddleware, [
           planId: pending.planId,
           requestedStorage: pending.requestedStorage,
           period: pending.period,
+          isRenew: toBoolRenew(pending.isRenew),
           studioId: pending.studioUserId,
         });
       } catch (fulfillErr) {
@@ -599,7 +644,8 @@ router.post('/payment-success', authMiddleware, [
       pending.userId,
       pending.storage,
       pending.period,
-      pending.planId
+      pending.planId,
+      pending.isRenew
     );
     pendingOrders.delete(order_id);
 
@@ -628,16 +674,20 @@ router.post('/purchase', authMiddleware, [
   body('period').isIn(['month', 'year']).withMessage('Period must be month or year'),
   body('price').isNumeric().withMessage('Price is required'),
   body('planId').optional(),
+  body('isRenew').optional({ nullable: true }).custom((v) => {
+    if (v === undefined || v === null || v === '') return true;
+    return [true, false, 'true', 'false', 1, 0, '1', '0'].includes(v);
+  }).withMessage('isRenew must be boolean'),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
     if (!errors.isEmpty()) {
       return res.status(400).json({ success: false, errors: errors.array() });
     }
-    const { storage, period, planId } = req.body;
+    const { storage, period, planId, isRenew = false } = req.body;
     const userId = req.user.id;
     const storageNum = parseFloat(storage);
-    const userStorage = await fulfillStoragePurchase(userId, storageNum, period || 'month', planId);
+    const userStorage = await fulfillStoragePurchase(userId, storageNum, period || 'month', planId, isRenew);
     res.json({
       success: true,
       message: `${storageNum} GB storage purchased successfully`,

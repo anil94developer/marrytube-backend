@@ -1,4 +1,3 @@
-const { Op } = require('sequelize');
 const { StoragePlan, UserStoragePlan, User } = require('../models');
 const { getCommissionPerGB } = require('./commissionService');
 
@@ -21,7 +20,12 @@ function addPeriodToDate(purchaseDate, period) {
  * Apply a storage plan to a client user (end-customer) and credit the studio wallet.
  * Same behavior as POST /studio/clients/:clientId/purchase-plan.
  */
-async function fulfillPurchasePlanForClient({ clientUserId, planId, requestedStorage, period, studioId }) {
+function toBoolRenew(v) {
+  return v === true || v === 'true' || v === 1 || v === '1';
+}
+
+async function fulfillPurchasePlanForClient({ clientUserId, planId, requestedStorage, period, isRenew = false, studioId }) {
+  const renew = toBoolRenew(isRenew);
   const plan = await StoragePlan.findByPk(parseInt(planId, 10));
   if (!plan) {
     const err = new Error('Plan not found');
@@ -44,24 +48,23 @@ async function fulfillPurchasePlanForClient({ clientUserId, planId, requestedSto
   const purchaseDate = new Date();
   const periodType = period === 'year' ? 'year' : 'month';
 
-  let userPlan = await UserStoragePlan.findOne({
-    where: {
-      userId: clientUserId,
-      planId: plan.id,
-      status: 'active',
-      expiryDate: { [Op.gt]: purchaseDate },
-    },
-  });
+  let userPlan = null;
+  if (renew) {
+    userPlan = await UserStoragePlan.findOne({
+      where: { userId: clientUserId, planId: plan.id },
+      order: [['expiryDate', 'DESC'], ['id', 'DESC']],
+    });
+  }
 
   let expiryDate;
   if (userPlan) {
+    // Renew: only extend expiry — same GB as before (new GB only on new purchase row).
     const baseDate = userPlan.expiryDate > purchaseDate ? new Date(userPlan.expiryDate) : purchaseDate;
     expiryDate = addPeriodToDate(baseDate, periodType);
-    userPlan.totalStorage += storageToAdd;
-    userPlan.availableStorage += storageToAdd;
     userPlan.expiryDate = expiryDate;
+    if (userPlan.status !== 'active') userPlan.status = 'active';
     await userPlan.save();
-  } else {
+  } else if (!renew) {
     expiryDate = addPeriodToDate(purchaseDate, periodType);
     userPlan = await UserStoragePlan.create({
       userId: clientUserId,
@@ -72,6 +75,10 @@ async function fulfillPurchasePlanForClient({ clientUserId, planId, requestedSto
       expiryDate,
       status: 'active',
     });
+  } else {
+    const err = new Error('No existing plan found to renew');
+    err.statusCode = 400;
+    throw err;
   }
 
   const commissionPerGB = await getCommissionPerGB();

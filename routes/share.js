@@ -2,11 +2,18 @@ const express = require('express');
 const crypto = require('crypto');
 const { body, validationResult } = require('express-validator');
 const { Op } = require('sequelize');
-const { Share, Folder, Media, UserStoragePlan } = require('../models');
+const { Share, Folder, Media, UserStoragePlan, sequelize } = require('../models');
 const { authMiddleware } = require('../middleware/auth');
 const { isS3Configured, presignExistingObject } = require('../services/s3Service');
 
 const router = express.Router();
+let shareEnumEnsured = false;
+
+async function ensureShareDriveEnumSupport() {
+  if (shareEnumEnsured) return;
+  await sequelize.query("ALTER TABLE `shares` MODIFY COLUMN `resourceType` ENUM('folder','media','drive') NOT NULL");
+  shareEnumEnsured = true;
+}
 
 /** Private B2 buckets need presigned GET URLs — anonymous share viewers have no bucket credentials. */
 const B2_VIEW_URL_TTL = parseInt(process.env.B2_VIEW_URL_TTL_SECONDS || '86400', 10);
@@ -209,13 +216,34 @@ router.post('/', authMiddleware, [
       expiresAt.setDate(expiresAt.getDate() + parseInt(expiresInDays, 10));
     }
 
-    await Share.create({
-      token,
-      resourceType,
-      resourceId,
-      userId,
-      expiresAt,
-    });
+    try {
+      await Share.create({
+        token,
+        resourceType,
+        resourceId,
+        userId,
+        expiresAt,
+      });
+    } catch (createErr) {
+      const msg = String(createErr?.message || '').toLowerCase();
+      const sqlMsg = String(createErr?.original?.sqlMessage || '').toLowerCase();
+      const isDriveEnumIssue =
+        resourceType === 'drive' &&
+        (msg.includes('data truncated for column') || sqlMsg.includes('data truncated for column')) &&
+        (msg.includes('resourcetype') || sqlMsg.includes('resourcetype'));
+
+      if (!isDriveEnumIssue) throw createErr;
+
+      // Backward-compat fix for older DB schema where shares.resourceType enum lacked 'drive'.
+      await ensureShareDriveEnumSupport();
+      await Share.create({
+        token,
+        resourceType,
+        resourceId,
+        userId,
+        expiresAt,
+      });
+    }
 
     const baseUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const shareUrl = `${baseUrl}/share/${token}`;

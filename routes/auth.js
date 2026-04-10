@@ -77,7 +77,7 @@ router.post('/verify-otp', [
         if (userType === 'customer') {
           await Storage.findOrCreate({
             where: { userId: user.id },
-            defaults: { userId: user.id, totalStorage: 1, usedStorage: 0, availableStorage: 1 },
+            defaults: { userId: user.id, totalStorage: 0, usedStorage: 0, availableStorage: 0 },
           });
         }
         isNewUser = true;
@@ -92,10 +92,22 @@ router.post('/verify-otp', [
         if (userType === 'customer') {
           await Storage.findOrCreate({
             where: { userId: user.id },
-            defaults: { userId: user.id, totalStorage: 1, usedStorage: 0, availableStorage: 1 },
+            defaults: { userId: user.id, totalStorage: 0, usedStorage: 0, availableStorage: 0 },
           });
         }
         isNewUser = true;
+      }
+    }
+
+    // Ensure customer storage exists with at least 1 GB free on login/register path.
+    // This also repairs old accounts that still have 0/0 storage.
+    if (user && user.userType === 'customer') {
+      const [storage] = await Storage.findOrCreate({
+        where: { userId: user.id },
+        defaults: { userId: user.id, totalStorage: 0, usedStorage: 0, availableStorage: 0 },
+      });
+      if (parseFloat(storage.totalStorage) === 0 && parseFloat(storage.usedStorage) === 0) {
+        await storage.update({ totalStorage: 0, availableStorage: 0 });
       }
     }
 
