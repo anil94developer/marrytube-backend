@@ -1,11 +1,9 @@
-const express = require('express');
+require('./config/loadEnv');
 const path = require('path');
-const cors = require('cors');
-const dotenv = require('dotenv');
-const { connectDB, getDbStatus } = require('./config/database');
 
-// Load environment variables
-dotenv.config();
+const express = require('express');
+const cors = require('cors');
+const { connectDB, getDbStatus } = require('./config/database');
 
 const app = express();
 
@@ -92,6 +90,9 @@ const server = app.listen(PORT, () => {
     console.log(`📦 Backblaze B2: configured (endpoint=${b2.endpoint}, bucket=${b2.bucket}, keyId=${b2.keyIdPrefix})`);
   } else {
     console.log('📦 Backblaze B2: not configured —', b2.hint || 'check .env');
+  }
+  if (!process.env.GOOGLE_CLIENT_ID?.trim() && !process.env.GOOGLE_WEB_CLIENT_ID?.trim()) {
+    console.warn('⚠️  GOOGLE_CLIENT_ID missing — Google login disabled. Add OAuth Web Client ID to MarryBackend/.env');
   }
 });
 // Prevent chunk upload / merge from being killed by default timeout (10 min)

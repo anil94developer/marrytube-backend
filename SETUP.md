@@ -14,8 +14,8 @@ PORT=5001
 NODE_ENV=development
 
 # MySQL Database Configuration
-DB_NAME=u214419219_matkafun
-DB_USER=u214419219_matkafun
+DB_NAME=a1774c4c_marrytube
+DB_USER=a1774c4c_marrytube
 DB_PASSWORD=Marrytube@123!
 DB_HOST=145.79.209.227
 DB_PORT=3306
@@ -47,8 +47,8 @@ OTP_LENGTH=6
 
 ### Database Details
 
-- **Database Name:** u214419219_matkafun
-- **Username:** u214419219_matkafun
+- **Database Name:** a1774c4c_marrytube
+- **Username:** a1774c4c_marrytube
 - **Password:** Marrytube@123!
 - **Host:** 145.79.209.227
 - **Port:** 3306 (default MySQL port)

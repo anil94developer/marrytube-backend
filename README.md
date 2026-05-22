@@ -62,11 +62,11 @@ NODE_ENV=development
 
 # MongoDB Configuration
 # Database credentials:
-# Database: u214419219_matkafun
-# Username: u214419219_matkafun
+# Database: a1774c4c_marrytube
+# Username: a1774c4c_marrytube
 # Password: Marrytube@123! (URL encoded as Shree%40123%21)
 # Host: 145.79.209.227
-MONGODB_URI=mongodb://u214419219_matkafun:Shree%40123%21@145.79.209.227:27017/u214419219_matkafun
+MONGODB_URI=mongodb://a1774c4c_marrytube:Shree%40123%21@145.79.209.227:27017/a1774c4c_marrytube
 
 # JWT Secret (Change this to a secure random string in production)
 JWT_SECRET=marrytube-secret-key-change-in-production-2024

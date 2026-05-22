@@ -257,8 +257,14 @@ const createAndSendOTP = async (identifier, type) => {
 
     return sendResult;
   } catch (error) {
-    console.error('OTP creation error:', error);
-    return { success: false, message: 'Failed to create OTP' };
+    console.error('OTP creation error:', error?.message || error);
+    if (error?.original) console.error('OTP DB detail:', error.original.code, error.original.sqlMessage);
+    const isProd = process.env.NODE_ENV === 'production';
+    const reason = error?.message || String(error);
+    return {
+      success: false,
+      message: isProd ? 'Failed to create OTP' : `Failed to create OTP — ${reason}`,
+    };
   }
 };
 

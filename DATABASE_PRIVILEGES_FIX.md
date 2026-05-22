@@ -2,13 +2,13 @@
 
 ## Problem Identified
 
-Your database `u214419219_matkafun` shows:
+Your database `a1774c4c_marrytube` shows:
 - **Privileged Users:** `a1770cc9_shree` ❌
 
 But you need:
-- **Privileged Users:** `u214419219_matkafun` ✅
+- **Privileged Users:** `a1774c4c_marrytube` ✅
 
-The user `u214419219_matkafun` doesn't have privileges on the database `u214419219_matkafun`.
+The user `a1774c4c_marrytube` doesn't have privileges on the database `a1774c4c_marrytube`.
 
 ---
 
@@ -27,8 +27,8 @@ The user `u214419219_matkafun` doesn't have privileges on the database `u2144192
      - **Database:** (dropdown)
 
 3. **Select User and Database**
-   - **User dropdown:** Select `u214419219_matkafun`
-   - **Database dropdown:** Select `u214419219_matkafun`
+   - **User dropdown:** Select `a1774c4c_marrytube`
+   - **Database dropdown:** Select `a1774c4c_marrytube`
    - Click **"Add"** button
 
 4. **Grant ALL PRIVILEGES**
@@ -38,8 +38,8 @@ The user `u214419219_matkafun` doesn't have privileges on the database `u2144192
 
 5. **Verify**
    - Go back to **"Current Databases"** section
-   - Check that `u214419219_matkafun` database now shows:
-     - **Privileged Users:** `u214419219_matkafun` ✅
+   - Check that `a1774c4c_marrytube` database now shows:
+     - **Privileged Users:** `a1774c4c_marrytube` ✅
 
 ---
 
@@ -53,27 +53,27 @@ The user `u214419219_matkafun` doesn't have privileges on the database `u2144192
 2. **Run SQL Command**
    ```sql
    -- Grant all privileges to user on database
-   GRANT ALL PRIVILEGES ON u214419219_matkafun.* TO 'u214419219_matkafun'@'%';
+   GRANT ALL PRIVILEGES ON a1774c4c_marrytube.* TO 'a1774c4c_marrytube'@'%';
    FLUSH PRIVILEGES;
    ```
 
 3. **Verify**
    ```sql
    -- Check privileges
-   SHOW GRANTS FOR 'u214419219_matkafun'@'%';
+   SHOW GRANTS FOR 'a1774c4c_marrytube'@'%';
    ```
 
 ### Method 2: Via phpMyAdmin Interface
 
 1. **Select Database**
-   - Click on database `u214419219_matkafun` in left sidebar
+   - Click on database `a1774c4c_marrytube` in left sidebar
 
 2. **Go to Privileges Tab**
    - Click on **"Privileges"** tab at the top
 
 3. **Add User**
    - Click **"Add user account"** or **"Edit privileges"**
-   - Select user: `u214419219_matkafun`
+   - Select user: `a1774c4c_marrytube`
    - Check **"ALL PRIVILEGES"**
    - Click **"Go"**
 
@@ -83,10 +83,10 @@ The user `u214419219_matkafun` doesn't have privileges on the database `u2144192
 
 After fixing, verify:
 
-- [ ] User `u214419219_matkafun` exists
+- [ ] User `a1774c4c_marrytube` exists
 - [ ] User host is `%` (not `localhost`)
-- [ ] User has privileges on database `u214419219_matkafun`
-- [ ] Database shows `u214419219_matkafun` in privileged users list
+- [ ] User has privileges on database `a1774c4c_marrytube`
+- [ ] Database shows `a1774c4c_marrytube` in privileged users list
 
 ---
 
@@ -129,16 +129,16 @@ Server is running on port 5001
 
 ```sql
 -- Create user if doesn't exist (with % host)
-CREATE USER IF NOT EXISTS 'u214419219_matkafun'@'%' IDENTIFIED BY 'Marrytube@123!';
+CREATE USER IF NOT EXISTS 'a1774c4c_marrytube'@'%' IDENTIFIED BY 'Marrytube@123!';
 
 -- Grant all privileges
-GRANT ALL PRIVILEGES ON u214419219_matkafun.* TO 'u214419219_matkafun'@'%';
+GRANT ALL PRIVILEGES ON a1774c4c_marrytube.* TO 'a1774c4c_marrytube'@'%';
 
 -- Flush privileges
 FLUSH PRIVILEGES;
 
 -- Verify
-SHOW GRANTS FOR 'u214419219_matkafun'@'%';
+SHOW GRANTS FOR 'a1774c4c_marrytube'@'%';
 ```
 
 ---
@@ -146,13 +146,13 @@ SHOW GRANTS FOR 'u214419219_matkafun'@'%';
 ## Summary
 
 **Current Status:**
-- Database: `u214419219_matkafun` ✅
+- Database: `a1774c4c_marrytube` ✅
 - Privileged User: `a1770cc9_shree` ❌
 
 **Required Status:**
-- Database: `u214419219_matkafun` ✅
-- Privileged User: `u214419219_matkafun` ✅
+- Database: `a1774c4c_marrytube` ✅
+- Privileged User: `a1774c4c_marrytube` ✅
 
 **Action Needed:**
-Add user `u214419219_matkafun` to database `u214419219_matkafun` with ALL PRIVILEGES.
+Add user `a1774c4c_marrytube` to database `a1774c4c_marrytube` with ALL PRIVILEGES.
 

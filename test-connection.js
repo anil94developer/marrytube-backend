@@ -7,8 +7,8 @@ async function testConnection() {
   console.log('Configuration:');
   console.log('  Host:', process.env.DB_HOST || '145.79.209.227');
   console.log('  Port:', process.env.DB_PORT || 3306);
-  console.log('  Database:', process.env.DB_NAME || 'u214419219_matkafun');
-  console.log('  User:', process.env.DB_USER || 'u214419219_matkafun');
+  console.log('  Database:', process.env.DB_NAME || 'a1774c4c_marrytube');
+  console.log('  User:', process.env.DB_USER || 'a1774c4c_marrytube');
   console.log('  Password:', process.env.DB_PASSWORD ? '***' : 'Not set');
   console.log('');
 
@@ -16,9 +16,9 @@ async function testConnection() {
     const connection = await mysql.createConnection({
       host: process.env.DB_HOST || '145.79.209.227',
       port: process.env.DB_PORT || 3306,
-      user: process.env.DB_USER || 'u214419219_matkafun',
+      user: process.env.DB_USER || 'a1774c4c_marrytube',
       password: process.env.DB_PASSWORD || 'Marrytube@123!',
-      database: process.env.DB_NAME || 'u214419219_matkafun',
+      database: process.env.DB_NAME || 'a1774c4c_marrytube',
     });
 
     console.log('✅ Connection successful!');

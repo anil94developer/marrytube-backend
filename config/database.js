@@ -1,12 +1,9 @@
+require('./loadEnv');
+
 const { Sequelize } = require('sequelize');
-const dotenv = require('dotenv');
-
-dotenv.config();
-
-// MySQL connection configuration
 const sequelize = new Sequelize(
-  process.env.DB_NAME || 'u214419219_matkafun',
-  process.env.DB_USER || 'u214419219_matkafun',
+  process.env.DB_NAME || 'a1774c4c_marrytube',
+  process.env.DB_USER || 'a1774c4c_marrytube',
   process.env.DB_PASSWORD || 'Marrytube@123!',
   {
     host: process.env.DB_HOST || '145.79.209.227',
@@ -37,11 +34,11 @@ const connectDB = async () => {
     await sequelize.authenticate();
     console.log('MySQL connected successfully');
     dbConnected = true;
-    
-    // Sync models (set to false in production, use migrations instead)
-    if (process.env.NODE_ENV === 'development') {
-      await sequelize.sync({ alter: false }); // Set to true to auto-update tables
-    }
+
+    // Create missing tables (e.g. `otps`). Alter only if DB_SYNC_ALTER=true (can be risky on large DBs).
+    const syncAlter = String(process.env.DB_SYNC_ALTER || '').toLowerCase() === 'true';
+    await sequelize.sync({ alter: syncAlter });
+    if (syncAlter) console.log('DB sync: alter mode enabled (DB_SYNC_ALTER=true)');
   } catch (error) {
     dbConnected = false;
     console.error('MySQL connection error:', error.message);
@@ -58,7 +55,7 @@ const connectDB = async () => {
         console.error('3. User does not have privileges on the database');
         console.error('\nSolution:');
         console.error('1. Go to cPanel → MySQL Databases');
-        console.error('2. Find user: u214419219_matkafun');
+        console.error('2. Find user: a1774c4c_marrytube');
         console.error('3. Change host from "localhost" to "%" (allows all IPs)');
         console.error('4. Or create user with host: ' + connectingIP);
         console.error('\nSee CPANEL_MYSQL_FIX.md for detailed steps');
